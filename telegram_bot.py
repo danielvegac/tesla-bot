@@ -24,7 +24,7 @@ class TelegramBot:
     def __init__(
         self,
         token: Optional[str] = None,
-        chat_ids: Optional[Sequence[str] ] = None,
+        chat_ids: Optional[Sequence[str]] = None,
         demo: Optional[bool] = None,
     ):
         self.token = token if token is not None else config.TELEGRAM_BOT_TOKEN
