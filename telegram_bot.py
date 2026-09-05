@@ -328,7 +328,8 @@ class TelegramBot:
         if on_text is not None:
             await on_text(normalized, chat_id)
             return
-        await handler.handle(normalized, chat_id=chat_id)
+        reply = await handler.handle(normalized)
+        await self.send_message(reply, chat_id=chat_id)
 
     def clear_history(self) -> None:
         self.sent_messages.clear()
