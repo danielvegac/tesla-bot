@@ -1,15 +1,17 @@
 # Tesla Familia Bot
 
-Bot familiar para consultar y controlar un Tesla, registrar viajes con odómetro real y avisar por **Telegram** (batería baja, carga lista, viaje terminado).
+Bot familiar para consultar y controlar un Tesla Model Y, registrar viajes con odómetro real y avisar por **Telegram** (batería baja, carga lista, viaje terminado).
 
-Funciona en **modo demo** sin credenciales (ideal para probar) y en **modo live** con Tesla Fleet API + bot de Telegram.
+Funciona en **modo demo** sin credenciales y en **modo live** con Tesla Fleet API + bot oficial de Telegram.
+
+Canal de mensajería: **Telegram primero** (API oficial). WhatsApp no oficial se pospone — riesgo de ban y mantenimiento feo para un bot familiar.
 
 ## Features
 
 - **Tesla Fleet API** — estado, carga, clima, navegación, lock/unlock, claxon, luces
 - **TripLogger** — distancia por odómetro, kWh, COP, eficiencia Wh/km
 - **TripMonitor** — detecta inicio/fin de viaje por marcha y velocidad
-- **Telegram** — notificaciones a chats de la familia
+- **Telegram** — notificaciones y comandos desde el iPhone (`estado`, `luces`, `carga`)
 - **Comandos ES/EN** — `estado`, `carga 80`, `ir a Unicentro`, `viajes`, etc.
 - **Demo mode** automático si no hay token
 
@@ -30,6 +32,7 @@ carga 80
 clima
 ir a Unicentro
 bloquear
+luces
 viajes
 ayuda
 exit
@@ -40,9 +43,13 @@ Smoke tests:
 ```bash
 python3 -m tesla_client
 python3 -m trip_monitor
+python3 -m telegram_bot
 ```
 
 ## Setup for real use
+
+App Tesla a usar: `523a361f-12e3-4f22-a95e-b71348948b51` (owner `mccepedap`).  
+**No uses** `8176c514` — el dominio `danielvegac.github.io` ya está tomado por la 523.
 
 ### 1. Environment
 
@@ -50,15 +57,18 @@ python3 -m trip_monitor
 cp .env.example .env
 ```
 
-Edita `.env`:
+Edita `.env` en `/Users/danielvega/Desktop/tesla-familia-bot` (nunca lo subas a git):
 
 | Variable | Descripción |
 |----------|-------------|
 | `TESLA_ACCESS_TOKEN` | Bearer token Fleet API |
-| `TESLA_VIN` | VIN del vehículo |
-| `TESLA_REGION` | `na`, `eu` o `cn` |
+| `TESLA_REFRESH_TOKEN` | Refresh (single-use — rotar al usar) |
+| `TESLA_VIN` | `LRWYGCFJ0TC568877` |
+| `TESLA_REGION` | `na` (esta cuenta está en NA Fleet) |
+| `TESLA_COMMAND_BASE_URL` | `https://127.0.0.1:4443` (proxy firmado) |
+| `TESLA_COMMAND_HTTP_VERIFY` | `false` para el cert local del proxy |
 | `TELEGRAM_BOT_TOKEN` | Token de [@BotFather](https://t.me/BotFather) |
-| `TELEGRAM_CHAT_IDS` | IDs de chat (usuario o grupo), separados por coma |
+| `TELEGRAM_CHAT_IDS` | IDs de chat de la familia, separados por coma |
 | `HOME_ELECTRICITY_RATE` | COP por kWh en casa |
 | `SUPERCHARGER_RATE` | COP por kWh Supercharger |
 | `BATTERY_CAPACITY_KWH` | Capacidad usable (ej. 75) |
@@ -66,20 +76,41 @@ Edita `.env`:
 | `TRIP_POLL_SECONDS` | Intervalo del monitor (default 45) |
 | `DEMO_MODE` | `true` fuerza demo aunque haya token |
 
-### 2. Telegram
+Zscaler en el Mac:
 
-1. Habla con [@BotFather](https://t.me/BotFather) → `/newbot` → copia el token.
-2. Envía un mensaje a tu bot.
-3. Abre `https://api.telegram.org/bot<TOKEN>/getUpdates` y copia `chat.id`.
-4. Pon token y chat id(s) en `.env`.
+```bash
+export SSL_CERT_FILE=$HOME/zscaler-chain.pem
+```
 
-### 3. Tesla Fleet API
+### 2. Telegram (iPhone)
 
-1. Obtén un access token con scopes de datos y comandos del vehículo.
-2. Configura `TESLA_ACCESS_TOKEN`, `TESLA_VIN` y la región correcta.
-3. `python3 -m tesla_client` debería devolver un snapshot `demo: false`.
+Guía paso a paso para amateur: **[docs/TELEGRAM_SETUP.md](docs/TELEGRAM_SETUP.md)**
 
-> **Nota:** en vehículos recientes, algunos *comandos* requieren Vehicle Command Protocol (clave virtual / proxy firmado). La lectura de `vehicle_data` funciona con el bearer token. Si un comando falla por firma, el bot reportará el error de la API.
+Resumen:
+
+1. iPhone → busca `@BotFather` (tilde azul) → `/newbot`
+2. Nombre: `Tesla Familia`. Username: algo que termine en `bot`
+3. Copia el token a `.env` → `TELEGRAM_BOT_TOKEN=...`
+4. `python3 main.py --telegram --setup`
+5. Escríbele `hola` al bot; te devuelve tu chat id
+6. `TELEGRAM_CHAT_IDS=ese_numero` en `.env`
+7. `python3 main.py --telegram` (o `caffeinate -i python3 main.py --telegram`)
+
+Sin `TELEGRAM_CHAT_IDS` el bot **no** ejecuta `luces` / `desbloquear` / `carga 80`. Eso es a propósito.
+
+El iPhone solo es el chat. El proceso vive en el Mac. Si el Mac se duerme, el bot no contesta.
+
+### 3. Tesla Fleet API + proxy
+
+Lecturas: token + VIN + región.
+
+Escrituras (`luces`, lock, clima, límite de carga, nav): Docker `tesla-http-proxy` en `127.0.0.1:4443` con `keys-owner/private-key.pem`. Virtual Key ya está paired.
+
+```bash
+python3 -m tesla_client
+```
+
+debe devolver un snapshot `demo: false`. `flash_lights` solo en P.
 
 ### 4. Run
 
@@ -92,6 +123,12 @@ python3 main.py --monitor
 
 # CLI sin monitor
 python3 main.py --no-monitor
+
+# iPhone: escucha Telegram + monitor
+python3 main.py --telegram
+
+# iPhone: solo descubrir chat id (no mueve el carro)
+python3 main.py --telegram --setup
 ```
 
 ## Commands (ES / EN)
@@ -124,10 +161,10 @@ python3 main.py --no-monitor
 
 ```
 main.py
-  ├── TeslaClient      → Fleet API (o demo)
+  ├── TeslaClient      → Fleet API (reads) + proxy (signed writes)
   ├── TripLogger       → SQLite logs/trips.db
   ├── TripMonitor      → poll → start/end trips
-  ├── TelegramBot      → notificaciones familia
+  ├── TelegramBot      → sendMessage + getUpdates long-poll
   └── CommandHandler   → comandos ES/EN + avisos
 ```
 
@@ -136,17 +173,27 @@ Al terminar un viaje, el monitor llama `on_trip_end` → mensaje Telegram con km
 ## Project layout
 
 ```
-config.py           # env + rates
-tesla_client.py     # Fleet API client
-trip_logger.py      # SQLite trips
-trip_monitor.py     # drive detection loop
-telegram_bot.py     # Bot API sendMessage
-command_handler.py  # ES/EN commands + reminders
-main.py             # CLI / monitor entry
-whatsapp_bot.py     # stub (Telegram is primary)
+config.py               # env + rates
+tesla_client.py         # Fleet API client
+trip_logger.py          # SQLite trips
+trip_monitor.py         # drive detection loop
+telegram_bot.py         # Bot API send + long-poll
+command_handler.py      # ES/EN commands + reminders
+main.py                 # CLI / monitor / --telegram
+whatsapp_bot.py         # stub (Telegram is primary)
+docs/TELEGRAM_SETUP.md  # BotFather amateur guide
+docs/STATUS.md
 requirements.txt
 .env.example
 ```
+
+## Honesty / risks
+
+- **Batería / wake:** cada `estado` puede despertar el carro. El monitor poll cada 45 s también. No lo dejes agresivo 24/7 sin mirar.
+- **Telegram token = control del bot.** Allowlist de chat ids. No publiques `t.me/tu_bot` en un grupo abierto.
+- **Mac dormido = bot muerto.** Esto todavía no es un servicio. Token Tesla ~8 h hasta el issue #4.
+- **WhatsApp no oficial:** no. Ban + sesión que se cae. Familia primero, experiments después.
+- **Comandos de escritura** solo con proxy + Virtual Key + auto en P para `luces`.
 
 ## Cost model
 
@@ -155,7 +202,7 @@ energy_kwh = (battery_used_pct / 100) * BATTERY_CAPACITY_KWH
 cost_cop   = energy_kwh * HOME_ELECTRICITY_RATE   # or SUPERCHARGER_RATE
 ```
 
-Ajusta las tarifas en `.env` a tus valores reales en Colombia (u otro país).
+Ajusta las tarifas en `.env` a tus valores reales en Colombia.
 
 ## License
 
