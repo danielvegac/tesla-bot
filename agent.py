@@ -6,6 +6,8 @@ Source and comments are English. The model mirrors the user's language.
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional
 
@@ -23,7 +25,7 @@ Do not recap the whole snapshot unless asked. One battery number + one range is 
 Never invent battery, range, GPS, lock, or arrival %. Tools only.
 Reach a place: get_vehicle then estimate_trip. Say km + estimated arrival % if the tool has them.
 Call arrival % an estimate, not Tesla's planner.
-Ask once if they want it on the map. send_navigation only after sí/yes/mándalo.
+Ask once if they want it on the map. Confirmation is handled in code.
 Never reveal tokens."""
 
 TOOLS = [
@@ -74,6 +76,22 @@ TOOLS = [
 
 MAX_HISTORY = 8
 
+CONFIRM_RE = re.compile(
+    r"^(si|s[ií]|yes|ok|okay|dale|claro|mando|mandalo|mandalo|envialo|envialo|send it|send)\b",
+    re.I,
+)
+
+
+def _fold(text: str) -> str:
+    n = unicodedata.normalize("NFD", text or "")
+    return "".join(c for c in n if unicodedata.category(c) != "Mn").strip().lower()
+
+
+def _is_confirm(text: str) -> bool:
+    t = _fold(text).replace("á", "a")
+    t = t.replace(",", " ")
+    return bool(CONFIRM_RE.search(t)) or "mandalo" in t or "envialo" in t or "send it" in t
+
 
 def _public_snapshot(data: Dict[str, Any]) -> Dict[str, Any]:
     keys = (
@@ -114,6 +132,7 @@ class FamiliaAgent:
         self.llm = llm or LLMClient()
         self._history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=MAX_HISTORY))
         self._last_vehicle: Optional[Dict[str, Any]] = None
+        self._pending_nav: Optional[str] = None
 
     @property
     def enabled(self) -> bool:
@@ -125,6 +144,31 @@ class FamiliaAgent:
                 "AI agent is not configured. Set OPENROUTER_API_KEY and LLM_MODEL, "
                 "or use commands: estado, luces, ayuda."
             )
+        if self._pending_nav and _is_confirm(user_text):
+            dest = self._pending_nav
+            print(f"[Agent] confirm send_navigation {dest}")
+            try:
+                result = await self._run_tool(
+                    "send_navigation", {"destination": dest, "confirmed": True}
+                )
+            except TeslaAPIError as exc:
+                result = {"ok": False, "error": str(exc)}
+            if result.get("ok"):
+                self._pending_nav = None
+                final = (
+                    f"Listo. Ya mandé *{dest}* al mapa del Y. "
+                    f"Revisa la pantalla del carro."
+                )
+            else:
+                final = (
+                    f"Quise mandar *{dest}* al mapa pero Tesla dijo: "
+                    f"{result.get('error') or result}. "
+                    f"Puedes probar el comando: ir a {dest}"
+                )
+            self._history[chat_id].append({"role": "user", "content": user_text})
+            self._history[chat_id].append({"role": "assistant", "content": final})
+            return final
+
         history = list(self._history[chat_id])
         messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM}]
         messages.extend(history)
@@ -181,13 +225,18 @@ class FamiliaAgent:
             self._last_vehicle = snap
             return {"ok": True, "vehicle": snap}
         if name == "estimate_trip":
-            return await self._estimate_trip(str(args.get("destination") or ""))
+            result = await self._estimate_trip(str(args.get("destination") or ""))
+            dest = ((result.get("destination") or {}).get("query")) or args.get("destination")
+            if result.get("ok") and dest:
+                self._pending_nav = str(dest)
+            return result
         if name == "send_navigation":
             dest = str(args.get("destination") or "").strip()
             confirmed = bool(args.get("confirmed"))
             if not dest:
                 return {"ok": False, "error": "empty destination"}
             if not confirmed:
+                self._pending_nav = dest
                 return {
                     "ok": False,
                     "needs_confirm": True,
@@ -196,6 +245,7 @@ class FamiliaAgent:
                 }
             try:
                 result = await self.tesla.send_navigation(dest)
+                self._pending_nav = None
                 return {"ok": True, "sent": dest, "result": result}
             except TeslaAPIError as exc:
                 return {"ok": False, "error": str(exc)}
