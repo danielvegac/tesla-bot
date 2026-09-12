@@ -1,34 +1,85 @@
-"""Family agent: natural language in, live Tesla tools, ES/EN out.
+"""Family agent: natural language in, live Tesla tools, ES or EN out.
 
-Slice 1: get_vehicle only. Writes stay on CommandHandler.
+Source and comments are English. The model mirrors the user's language.
 """
 
 from __future__ import annotations
 
 import json
+from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional
 
 from llm import LLMClient, LLMError
 from tesla_client import TeslaAPIError, TeslaClient
+import places
 
-SYSTEM = """Eres Tesla Familia, asistente de la familia para un Tesla Model Y en Colombia.
-Responde en el mismo idioma que el usuario (español o inglés), breve y claro.
-NUNCA inventes batería, rango, ubicación, puertas ni si está parked.
-Si necesitas datos del carro, llama get_vehicle.
-Si get_vehicle falla, di que no tienes datos live.
-No ofrezcas desbloquear ni navegar en esta versión; para luces/carga/clima di que usen el comando exacto (luces, carga 80, clima).
-No reveles tokens ni claves."""
+SYSTEM = """You are Tesla Familia, a warm family assistant for Daniel's Tesla Model Y in Colombia.
+
+Language: answer in the SAME language as the user (Spanish or English). Do not mix.
+Tone: like a helpful chat assistant (ChatGPT-style), 4–8 short sentences, not a one-liner and not an essay.
+
+Facts: NEVER invent battery %, range, lock, location, or arrival %. Only use tool results.
+If a tool fails, say you do not have live data.
+
+When the user asks if they can reach a place:
+1. Call get_vehicle.
+2. Call estimate_trip with that destination.
+3. Explain current %, Tesla rated range, driving km, and OUR estimated arrival %.
+4. Say clearly this is an estimate, not Tesla's in-car trip planner.
+5. If the estimate looks comfortable, offer to send the destination to the car map.
+6. Do NOT call send_navigation until the user confirms (sí, si, yes, mandalo, mándalo, envialo, send it).
+
+Writes: send_navigation goes to the car screen. Lock/unlock/honk stay on exact commands for now.
+Flash/climate/charge: they can still use exact commands luces, clima, carga 80.
+Never reveal tokens or keys."""
 
 TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "get_vehicle",
-            "description": "Live snapshot of the Model Y: battery, range, park/drive, charge, climate, lock, odometer.",
-            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            "description": "Live Model Y snapshot: battery, range, park/drive, charge, climate, lock, lat/lon if present.",
+            "parameters": {"type": "object", "properties": {}},
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "estimate_trip",
+            "description": "Geocode a destination, driving distance from the car, estimated arrival battery %. Not Tesla official planner.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "destination": {
+                        "type": "string",
+                        "description": "Place name, e.g. Unicentro, El Rancho, address in Bogotá",
+                    }
+                },
+                "required": ["destination"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_navigation",
+            "description": "Send a destination to the Model Y map. Only after the user confirms.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "destination": {"type": "string"},
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "True only if the user just confirmed this send.",
+                    },
+                },
+                "required": ["destination", "confirmed"],
+            },
+        },
+    },
 ]
+
+MAX_HISTORY = 12
 
 
 def _public_snapshot(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -43,6 +94,8 @@ def _public_snapshot(data: Dict[str, Any]) -> Dict[str, Any]:
         "charge_limit_soc",
         "charging_state",
         "odometer_km",
+        "latitude",
+        "longitude",
         "inside_temp",
         "outside_temp",
         "is_climate_on",
@@ -52,37 +105,51 @@ def _public_snapshot(data: Dict[str, Any]) -> Dict[str, Any]:
     return {k: data.get(k) for k in keys}
 
 
+def _args(call: Dict[str, Any]) -> Dict[str, Any]:
+    raw = (call.get("function") or {}).get("arguments") or "{}"
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw) or {}
+    except Exception:
+        return {}
+
+
 class FamiliaAgent:
     def __init__(self, tesla: Optional[TeslaClient] = None, llm: Optional[LLMClient] = None):
         self.tesla = tesla or TeslaClient()
         self.llm = llm or LLMClient()
+        self._history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=MAX_HISTORY))
+        self._last_vehicle: Optional[Dict[str, Any]] = None
 
     @property
     def enabled(self) -> bool:
         return self.llm.configured
 
-    async def reply(self, user_text: str) -> str:
+    async def reply(self, user_text: str, chat_id: str = "family") -> str:
         if not self.enabled:
             return (
-                "El agente AI no está configurado. Pon OPENROUTER_API_KEY y "
-                "LLM_MODEL en .env, o usa comandos: estado, luces, ayuda."
+                "AI agent is not configured. Set OPENROUTER_API_KEY and LLM_MODEL, "
+                "or use commands: estado, luces, ayuda."
             )
-        messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": user_text},
-        ]
+        history = list(self._history[chat_id])
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM}]
+        messages.extend(history)
+        messages.append({"role": "user", "content": user_text})
         try:
-            for _ in range(3):
-                msg = await self.llm.chat(messages, TOOLS, max_tokens=800)
+            final = ""
+            for _ in range(4):
+                msg = await self.llm.chat(messages, TOOLS, max_tokens=900)
                 tool_calls = msg.get("tool_calls") or []
                 content = (msg.get("content") or "").strip()
                 if not tool_calls:
-                    return content or "No pude armar una respuesta. Prueba: estado"
+                    final = content or "No pude armar una respuesta. Prueba: estado"
+                    break
                 messages.append(msg)
                 for call in tool_calls:
                     name = (call.get("function") or {}).get("name") or ""
                     call_id = call.get("id") or "tool"
-                    result = await self._run_tool(name)
+                    result = await self._run_tool(name, _args(call))
                     messages.append(
                         {
                             "role": "tool",
@@ -90,15 +157,67 @@ class FamiliaAgent:
                             "content": json.dumps(result, ensure_ascii=False),
                         }
                     )
-            return "Tardé demasiado pidiendo datos. Prueba otra vez o escribe estado."
+            else:
+                final = "Tardé demasiado pidiendo datos. Prueba otra vez o escribe estado."
+            self._history[chat_id].append({"role": "user", "content": user_text})
+            self._history[chat_id].append({"role": "assistant", "content": final})
+            return final
         except LLMError as exc:
             return f"No pude hablar con el modelo ({exc}). Usa `estado` mientras tanto."
         except TeslaAPIError as exc:
             return f"Tesla no respondió: {exc}"
 
-    async def _run_tool(self, name: str) -> Dict[str, Any]:
-        print(f"[Agent tool] {name}")
+    async def _run_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        print(f"[Agent tool] {name} {args}")
         if name == "get_vehicle":
             data = await self.tesla.get_vehicle_data()
-            return {"ok": True, "vehicle": _public_snapshot(data)}
+            snap = _public_snapshot(data)
+            self._last_vehicle = snap
+            return {"ok": True, "vehicle": snap}
+        if name == "estimate_trip":
+            return await self._estimate_trip(str(args.get("destination") or ""))
+        if name == "send_navigation":
+            dest = str(args.get("destination") or "").strip()
+            confirmed = bool(args.get("confirmed"))
+            if not dest:
+                return {"ok": False, "error": "empty destination"}
+            if not confirmed:
+                return {
+                    "ok": False,
+                    "needs_confirm": True,
+                    "destination": dest,
+                    "message": "Ask the user to confirm before sending to the car map.",
+                }
+            try:
+                result = await self.tesla.send_navigation(dest)
+                return {"ok": True, "sent": dest, "result": result}
+            except TeslaAPIError as exc:
+                return {"ok": False, "error": str(exc)}
         return {"ok": False, "error": f"unknown tool {name}"}
+
+    async def _estimate_trip(self, destination: str) -> Dict[str, Any]:
+        dest = places.resolve_place(destination)
+        if not dest:
+            return {"ok": False, "error": f"could not geocode {destination}"}
+        vehicle = self._last_vehicle
+        if vehicle is None:
+            data = await self.tesla.get_vehicle_data()
+            vehicle = _public_snapshot(data)
+            self._last_vehicle = vehicle
+        lat, lon = vehicle.get("latitude"), vehicle.get("longitude")
+        route_km = None
+        if lat is not None and lon is not None:
+            route_km = places.driving_km((float(lat), float(lon)), (dest["lat"], dest["lon"]))
+        estimate = places.estimate_arrival_soc(
+            vehicle.get("battery_level"),
+            vehicle.get("battery_range_km"),
+            route_km,
+        )
+        return {
+            "ok": True,
+            "destination": dest,
+            "vehicle_battery_pct": vehicle.get("battery_level"),
+            "vehicle_range_km": vehicle.get("battery_range_km"),
+            "has_gps": lat is not None,
+            "estimate": estimate,
+        }
