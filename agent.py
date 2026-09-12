@@ -13,25 +13,18 @@ from llm import LLMClient, LLMError
 from tesla_client import TeslaAPIError, TeslaClient
 import places
 
-SYSTEM = """You are the AI of this Tesla Model Y in Colombia. The family is talking TO THE CAR, not to a generic chatbot.
-Speak as the car's assistant: "estoy al 66%", "puedo llegar", "te mando Unicentro al mapa". Warm, first-person about the vehicle.
+SYSTEM = """You are this Tesla Model Y talking to the family in Colombia.
+First person as the car: "estoy al 65%", "puedo llegar", "te lo mando al mapa".
 
-Language: answer in the SAME language as the user (Spanish or English). Do not mix.
-Tone: ChatGPT-style helper, 4–8 short sentences. Not a one-liner. Not an essay. Not a command list unless asked.
+Language: same as the user (Spanish or English). Do not mix.
+Length: 2 to 4 short sentences. No lists. Do not repeat the same fact twice.
+Do not recap the whole snapshot unless asked. One battery number + one range is enough.
 
-Facts: NEVER invent battery %, range, lock, location, or arrival %. Only tool results.
-If a tool fails, say you do not have live data right now.
-
-When they ask if you can reach a place:
-1. get_vehicle
-2. estimate_trip
-3. Tell current %, rated range, driving km, estimated arrival %.
-4. Label arrival % as our estimate (not Tesla's in-car planner).
-5. If it looks comfortable, ask if they want you to put it on the car map.
-6. send_navigation only after they confirm (sí, si, yes, mándalo, envialo, send it).
-
-Exact commands still work outside this agent: luces, clima, carga 80, estado.
-Never reveal tokens or keys."""
+Never invent battery, range, GPS, lock, or arrival %. Tools only.
+Reach a place: get_vehicle then estimate_trip. Say km + estimated arrival % if the tool has them.
+Call arrival % an estimate, not Tesla's planner.
+Ask once if they want it on the map. send_navigation only after sí/yes/mándalo.
+Never reveal tokens."""
 
 TOOLS = [
     {
@@ -79,7 +72,7 @@ TOOLS = [
     },
 ]
 
-MAX_HISTORY = 12
+MAX_HISTORY = 8
 
 
 def _public_snapshot(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -139,11 +132,24 @@ class FamiliaAgent:
         try:
             final = ""
             for _ in range(4):
-                msg = await self.llm.chat(messages, TOOLS, max_tokens=900)
+                msg = await self.llm.chat(messages, TOOLS, max_tokens=1600)
                 tool_calls = msg.get("tool_calls") or []
                 content = (msg.get("content") or "").strip()
                 if not tool_calls:
-                    final = content or "No pude armar una respuesta. Prueba: estado"
+                    if not content:
+                        nudge = await self.llm.chat(
+                            messages
+                            + [
+                                {
+                                    "role": "user",
+                                    "content": "Answer now in 2-4 sentences using the tool results.",
+                                }
+                            ],
+                            None,
+                            max_tokens=400,
+                        )
+                        content = (nudge.get("content") or "").strip()
+                    final = content or "Estoy aquí. Prueba otra vez o escribe estado."
                     break
                 messages.append(msg)
                 for call in tool_calls:
@@ -158,7 +164,7 @@ class FamiliaAgent:
                         }
                     )
             else:
-                final = "Tardé demasiado pidiendo datos. Prueba otra vez o escribe estado."
+                final = "Tardé pidiendo datos. Escribe estado o pregunta de nuevo."
             self._history[chat_id].append({"role": "user", "content": user_text})
             self._history[chat_id].append({"role": "assistant", "content": final})
             return final
