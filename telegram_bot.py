@@ -15,6 +15,7 @@ your chat id and will NOT run vehicle commands (lock/flash/nav).
 
 from __future__ import annotations
 
+import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 
 import config
@@ -38,6 +39,8 @@ FAMILY_COMMANDS = [
     {"command": "viajes", "description": "Últimos viajes"},
 ]
 
+MAX_COMMANDS_PER_BUBBLE = 8
+
 
 def normalize_incoming_text(text: str) -> str:
     """Turn Telegram '/estado@MyBot' into 'estado' for CommandHandler."""
@@ -53,6 +56,22 @@ def normalize_incoming_text(text: str) -> str:
     if lowered in {"start", "startbot"}:
         return "hola"
     return raw
+
+
+def split_commands(text: str) -> List[str]:
+    """One Telegram bubble may contain several commands (newlines or ;).
+
+    Does not split on spaces, so 'ir a Unicentro' stays one command.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    parts: List[str] = []
+    for chunk in re.split(r"[\r\n;]+", raw):
+        chunk = chunk.strip().strip("-•*").strip()
+        if chunk:
+            parts.append(chunk)
+    return parts[:MAX_COMMANDS_PER_BUBBLE]
 
 
 class TelegramBot:
@@ -324,12 +343,21 @@ class TelegramBot:
             )
             return
 
-        normalized = normalize_incoming_text(text)
-        if on_text is not None:
-            await on_text(normalized, chat_id)
+        commands = [normalize_incoming_text(part) for part in split_commands(text)]
+        commands = [c for c in commands if c]
+        if not commands:
             return
-        reply = await handler.handle(normalized)
-        await self.send_message(reply, chat_id=chat_id)
+
+        if on_text is not None:
+            for cmd in commands:
+                await on_text(cmd, chat_id)
+            return
+
+        replies: List[str] = []
+        for cmd in commands:
+            print(f"[Telegram cmd] {cmd}")
+            replies.append(await handler.handle(cmd))
+        await self.send_message("\n\n".join(replies), chat_id=chat_id)
 
     def clear_history(self) -> None:
         self.sent_messages.clear()
@@ -373,6 +401,7 @@ if __name__ == "__main__":
         bot = TelegramBot(demo=True)
         await bot.send_message("Hola familia (demo)")
         print("normalize:", normalize_incoming_text("/estado@TeslaFamiliaBot"))
+        print("split:", split_commands("hola\nestado\nluces"))
         await bot.aclose()
 
     asyncio.run(_demo())
