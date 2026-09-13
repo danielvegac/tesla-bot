@@ -48,6 +48,7 @@ class LLMClient:
         tools: Optional[List[Dict[str, Any]]] = None,
         *,
         max_tokens: int = 800,
+        tool_choice: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not self.configured:
             raise LLMError("LLM not configured (OPENROUTER_API_KEY / XAI_API_KEY)")
@@ -59,9 +60,14 @@ class LLMClient:
             "max_tokens": max_tokens,
             "temperature": 0.2,
         }
+        if self.backend == "openrouter":
+            # Qwen/DeepSeek flash burn tokens on hidden reasoning and return content=None.
+            payload["reasoning"] = {"effort": "none", "exclude": True}
         if tools:
             payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+            payload["tool_choice"] = tool_choice or "auto"
+        elif tool_choice:
+            payload["tool_choice"] = tool_choice
 
         headers = {"Content-Type": "application/json"}
         if self.api_key:
