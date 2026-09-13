@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from typing import Optional
 
 
 def fold(text: str) -> str:
@@ -29,8 +30,6 @@ def is_wake(text: str) -> bool:
     words = t.replace("?", " ").replace("!", " ").replace(",", " ").split()
     if "wake" in words and "awake" not in words:
         return True
-    # Verb forms: despertar / despertarte (e) and despierta / despiertate (ie).
-    # Do not treat adjective "despierto" as a wake command.
     if re.search(r"\bdespertar(?:te)?\b|\bdespierta(?:te)?\b", t):
         return True
     return False
@@ -41,6 +40,19 @@ CONFIRM_RE = re.compile(
     re.I,
 )
 DENY_RE = re.compile(r"^(no|nop|cancel|cancela|cancelar|stop)\b", re.I)
+NAV_PREFIX = (
+    "marca el destino a ",
+    "marca destino a ",
+    "marca el destino ",
+    "envia el destino a ",
+    "enviar destino a ",
+    "ir a ",
+    "navegar a ",
+    "go to ",
+    "destino a ",
+    "mandalo a ",
+    "manda a ",
+)
 
 
 def is_confirm(text: str) -> bool:
@@ -50,3 +62,20 @@ def is_confirm(text: str) -> bool:
 
 def is_deny(text: str) -> bool:
     return bool(DENY_RE.search(fold(text)))
+
+
+def navigation_destination(text: str) -> Optional[str]:
+    raw = (text or "").strip()
+    t = fold(raw)
+    if not t:
+        return None
+    for prefix in NAV_PREFIX:
+        idx = t.find(prefix)
+        if idx >= 0:
+            dest = raw[idx + len(prefix) :].strip(" .,;?")
+            return dest or None
+    if "unicentro" in t:
+        return "Unicentro"
+    if "el rancho" in t or "club campestre" in t:
+        return "Club Campestre El Rancho"
+    return None
