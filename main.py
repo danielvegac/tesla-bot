@@ -11,16 +11,39 @@ from typing import List, Optional
 import config
 from command_handler import CommandHandler
 from telegram_bot import TelegramBot
-from tesla_client import TeslaClient
+from tesla_client import TeslaAPIError, TeslaClient
 from trip_logger import TripLogger
 from trip_monitor import TripMonitor
 
-STARTUP_HELLO = "Hola. Ya estoy aquí. Pregúntame la pila o dime despierta."
+HELLO_ASLEEP = "Hola. Estoy en reposo. Escríbeme si me necesitas."
+HELLO_AWAKE = "Hola. Estoy despierto."
+HELLO_FALLBACK = "Hola. Ya estoy aquí."
 
 
 def _startup_ping_enabled() -> bool:
     raw = os.getenv("TELEGRAM_STARTUP_PING", "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
+
+
+async def _hello_line(tesla: TeslaClient) -> str:
+    try:
+        vehicles = await tesla.list_vehicles()
+    except TeslaAPIError:
+        return HELLO_FALLBACK
+    vin = (getattr(tesla, "vin", "") or "").upper()
+    match = None
+    for item in vehicles or []:
+        if str(item.get("vin", "")).upper() == vin:
+            match = item
+            break
+    if match is None and vehicles:
+        match = vehicles[0]
+    state = str((match or {}).get("state") or "").lower()
+    if state == "online":
+        return HELLO_AWAKE
+    if state in {"asleep", "offline"}:
+        return HELLO_ASLEEP
+    return HELLO_FALLBACK
 
 
 @dataclass
@@ -136,7 +159,9 @@ async def run_telegram(app: App, *, setup: bool = False) -> None:
     if not setup:
         await app.monitor.start()
         if app.telegram.commands_allowed and _startup_ping_enabled():
-            await app.handler.notify_family(STARTUP_HELLO)
+            line = await _hello_line(app.tesla)
+            print(f"[Telegram] hello: {line}")
+            await app.handler.notify_family(line)
 
     try:
         await app.telegram.poll_commands(app.handler, setup=setup)
