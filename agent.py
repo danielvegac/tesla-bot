@@ -15,14 +15,13 @@ import eventlog
 
 SYSTEM = """You are this Tesla Model Y talking to the family in Colombia.
 First person as the car. Same language as the user. 2 to 4 short sentences.
+Correct Spanish spelling and tildes: despiértame, estás, batería. Never write despiername.
 
 Honesty:
 - Never invent battery, range, GPS, lock, climate, or awake/asleep.
-- Use only the latest tool JSON. If ok=false, say you could not reach the car.
-- If state is asleep/offline, say you are asleep. Do not reuse old battery numbers.
-- get_vehicle does not wake you. To wake, call wake_vehicle.
-- Unlock and navigation need confirm. Lock and climate run immediately.
-- If a lock tool returns already=true, say the doors were already in that state. Do not claim you just changed them.
+- Use only the latest tool JSON.
+- If a tool already produced a message field, prefer that wording.
+- After wake_vehicle, mention that you are awake BEFORE any lock/battery detail.
 Never reveal tokens."""
 
 CONFIRM_WRITES = {"unlock_doors"}
@@ -33,8 +32,8 @@ TOOLS = [
     {"type": "function", "function": {"name": "wake_vehicle", "description": "Wake the car, then read battery.", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "estimate_trip", "description": "Distance + estimated arrival %.", "parameters": {"type": "object", "properties": {"destination": {"type": "string"}}, "required": ["destination"]}}},
     {"type": "function", "function": {"name": "send_navigation", "description": "Send destination to the map after confirm.", "parameters": {"type": "object", "properties": {"destination": {"type": "string"}, "confirmed": {"type": "boolean"}}, "required": ["destination", "confirmed"]}}},
-    {"type": "function", "function": {"name": "lock_doors", "description": "Lock doors immediately. If already locked, report already=true.", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "unlock_doors", "description": "Unlock doors. Needs confirm. If already unlocked, report already=true.", "parameters": {"type": "object", "properties": {"confirmed": {"type": "boolean"}}}}},
+    {"type": "function", "function": {"name": "lock_doors", "description": "Lock doors. If asleep, return needs_wake. If already locked, already=true.", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "unlock_doors", "description": "Unlock doors. Needs confirm.", "parameters": {"type": "object", "properties": {"confirmed": {"type": "boolean"}}}}},
     {"type": "function", "function": {"name": "climate_on", "description": "Start climate immediately.", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "climate_off", "description": "Stop climate immediately.", "parameters": {"type": "object", "properties": {}}}},
 ]
@@ -53,6 +52,8 @@ MESSAGES = {
     "climate_off": "Listo. Apagué el clima.",
     "lock_already": "Las puertas ya estaban cerradas.",
     "unlock_already": "Las puertas ya estaban abiertas.",
+    "wake_ok": "Listo, ya estoy despierto.",
+    "needs_wake": "Estoy dormido. Escribe *despierta* y lo hago.",
 }
 
 
@@ -95,6 +96,10 @@ def _args(call: Dict[str, Any]) -> Dict[str, Any]:
         return {}
 
 
+def _join(*parts: str) -> str:
+    return " ".join(p for p in parts if p)
+
+
 class FamiliaAgent:
     def __init__(self, tesla: Optional[TeslaClient] = None, llm: Optional[LLMClient] = None):
         self.tesla = tesla or TeslaClient()
@@ -103,6 +108,7 @@ class FamiliaAgent:
         self._last_vehicle: Optional[Dict[str, Any]] = None
         self._pending_nav: Optional[str] = None
         self._pending_write: Optional[str] = None
+        self._resume_after_wake: Optional[str] = None
 
     @property
     def enabled(self) -> bool:
@@ -121,7 +127,7 @@ class FamiliaAgent:
 
         if self._pending_write and _is_deny(user_text):
             self._pending_write = None
-            self._pending_nav = None
+            self._resume_after_wake = None
             final = "Ok, cancelled." if _english(user_text) else "Listo, cancelado."
             self._history[chat_id].append({"role": "user", "content": user_text})
             self._history[chat_id].append({"role": "assistant", "content": final})
@@ -130,21 +136,15 @@ class FamiliaAgent:
         if self._pending_write and _is_confirm(user_text):
             tool = self._pending_write
             print(f"[Agent] confirm {tool}")
-            eventlog.log_event("confirm", tool=tool)
             result = await self._run_tool(tool, {"confirmed": True})
             self._pending_write = None
-            final = result.get("message") or (
-                f"No pude completar la acción: {result.get('error') or result}"
-                if not result.get("ok")
-                else "Listo."
-            )
+            final = result.get("message") or "Listo."
             self._history[chat_id].append({"role": "user", "content": user_text})
             self._history[chat_id].append({"role": "assistant", "content": final})
             return final
 
         if self._pending_nav and _is_confirm(user_text):
             dest = self._pending_nav
-            print(f"[Agent] confirm send_navigation {dest}")
             result = await self._run_tool("send_navigation", {"destination": dest, "confirmed": True})
             if result.get("ok"):
                 self._pending_nav = None
@@ -162,29 +162,37 @@ class FamiliaAgent:
         try:
             final = ""
             pending_ask = None
-            immediate = None
+            parts: List[str] = []
             for _ in range(4):
                 msg = await self.llm.chat(messages, TOOLS, max_tokens=1600)
                 tool_calls = msg.get("tool_calls") or []
                 content = (msg.get("content") or "").strip()
                 if not tool_calls:
-                    if not content:
-                        nudge = await self.llm.chat(
-                            messages + [{"role": "user", "content": "Answer in 2-4 sentences using only the latest tool JSON."}],
-                            None,
-                            max_tokens=400,
-                        )
-                        content = (nudge.get("content") or "").strip()
-                    final = pending_ask or immediate or content or "No pude armar una respuesta honesta. Prueba estado."
+                    if parts:
+                        final = _join(*parts)
+                    elif pending_ask:
+                        final = pending_ask
+                    else:
+                        final = content or "No pude armar una respuesta honesta. Prueba estado."
                     break
                 messages.append(msg)
                 for call in tool_calls:
                     name = (call.get("function") or {}).get("name") or ""
                     result = await self._run_tool(name, _args(call))
-                    if result.get("needs_confirm"):
+                    if name == "wake_vehicle" and result.get("state") == "online":
+                        parts.append(MESSAGES["wake_ok"])
+                        resume = self._resume_after_wake
+                        self._resume_after_wake = None
+                        if resume:
+                            follow = await self._run_tool(resume, {"confirmed": resume not in CONFIRM_WRITES})
+                            if follow.get("message"):
+                                parts.append(follow["message"])
+                    elif result.get("needs_wake"):
+                        pending_ask = MESSAGES["needs_wake"]
+                    elif result.get("needs_confirm"):
                         pending_ask = self._ask_confirm(name, user_text)
                     elif result.get("message") and name in WRITE_TOOLS:
-                        immediate = result.get("message")
+                        parts.append(result["message"])
                     messages.append(
                         {
                             "role": "tool",
@@ -193,7 +201,7 @@ class FamiliaAgent:
                         }
                     )
             else:
-                final = pending_ask or immediate or "Tardé pidiendo datos. Escribe estado."
+                final = _join(*parts) or pending_ask or "Tardé pidiendo datos. Escribe estado."
             self._history[chat_id].append({"role": "user", "content": user_text})
             self._history[chat_id].append({"role": "assistant", "content": final})
             eventlog.log_event("turn", text=user_text[:200], preview=str(final)[:200])
@@ -234,6 +242,10 @@ class FamiliaAgent:
             return None
 
     async def _guarded_write(self, name: str, confirmed: bool, runner) -> Dict[str, Any]:
+        state = await self._fleet_state()
+        if state != "online" and name in WRITE_TOOLS:
+            self._resume_after_wake = name
+            return {"ok": False, "needs_wake": True, "action": name, "message": MESSAGES["needs_wake"]}
         if name in CONFIRM_WRITES and not confirmed:
             self._pending_write = name
             return {"ok": False, "needs_confirm": True, "action": name}
@@ -246,12 +258,10 @@ class FamiliaAgent:
         try:
             result = await runner()
             self._pending_write = None
-            if name == "lock_doors":
-                if self._last_vehicle is not None:
-                    self._last_vehicle["locked"] = True
-            if name == "unlock_doors":
-                if self._last_vehicle is not None:
-                    self._last_vehicle["locked"] = False
+            if name == "lock_doors" and self._last_vehicle is not None:
+                self._last_vehicle["locked"] = True
+            if name == "unlock_doors" and self._last_vehicle is not None:
+                self._last_vehicle["locked"] = False
             return {"ok": True, "already": False, "result": result, "message": MESSAGES.get(name, "Listo.")}
         except TeslaAPIError as exc:
             return {"ok": False, "error": str(exc)}
@@ -272,7 +282,7 @@ class FamiliaAgent:
                 return {"ok": True, "asleep": False, "vehicle": snap}
             except TeslaAPIError as exc:
                 if exc.status_code == 408:
-                    return {"ok": True, "asleep": True, "vehicle": {"state": "asleep"}, "note": "Do not quote old battery figures."}
+                    return {"ok": True, "asleep": True, "vehicle": {"state": "asleep"}}
                 return {"ok": False, "error": str(exc)}
         if name == "wake_vehicle":
             try:
