@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -13,6 +14,13 @@ from telegram_bot import TelegramBot
 from tesla_client import TeslaClient
 from trip_logger import TripLogger
 from trip_monitor import TripMonitor
+
+STARTUP_HELLO = "Hola. Ya estoy aquí. Pregúntame la pila o dime despierta."
+
+
+def _startup_ping_enabled() -> bool:
+    raw = os.getenv("TELEGRAM_STARTUP_PING", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 @dataclass
@@ -40,7 +48,6 @@ def build_app(
     logger = TripLogger()
     telegram = TelegramBot()
     handler = CommandHandler(tesla=tesla, logger=logger, telegram=telegram)
-
     monitor = TripMonitor(
         tesla=tesla,
         logger=logger,
@@ -83,7 +90,6 @@ async def run_cli(app: App) -> None:
             except EOFError:
                 break
             if cmd.lower().strip() in {"exit", "quit", "salir"}:
-                print("Hasta luego")
                 break
             await app.handler.handle(cmd)
     finally:
@@ -91,7 +97,6 @@ async def run_cli(app: App) -> None:
 
 
 async def run_monitor_only(app: App) -> None:
-    print("Monitor mode. Ctrl+C para salir.")
     await app.monitor.start()
     try:
         while True:
@@ -103,7 +108,6 @@ async def run_monitor_only(app: App) -> None:
 
 
 async def run_cli_no_monitor(app: App) -> None:
-    print("Tesla Familia Bot (CLI only)")
     while True:
         try:
             cmd = await asyncio.to_thread(input, "Command: ")
@@ -117,26 +121,22 @@ async def run_cli_no_monitor(app: App) -> None:
 async def run_telegram(app: App, *, setup: bool = False) -> None:
     _banner(app)
     if not app.telegram.token:
-        print("Falta TELEGRAM_BOT_TOKEN en .env — docs/TELEGRAM_SETUP.md")
+        print("Falta TELEGRAM_BOT_TOKEN en .env")
         return
-
     try:
         me = await app.telegram.get_me()
     except Exception as exc:
         print(f"No pude hablar con api.telegram.org: {exc}")
         return
-
     if not me.get("ok"):
-        print(f"Token rechazado por Telegram: {me}")
+        print(f"Token rechazado: {me}")
         return
-
-    result = me.get("result") or {}
-    username = result.get("username") or "?"
-    print(f"   Bot: @{username}")
+    print(f"   Bot: @{(me.get('result') or {}).get('username') or '?'}")
 
     if not setup:
         await app.monitor.start()
-        print("[Telegram] listening — no startup ping to the family chat")
+        if app.telegram.commands_allowed and _startup_ping_enabled():
+            await app.handler.notify_family(STARTUP_HELLO)
 
     try:
         await app.telegram.poll_commands(app.handler, setup=setup)
@@ -152,7 +152,6 @@ async def async_main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--setup", action="store_true")
     parser.add_argument("--demo", action="store_true")
     args = parser.parse_args(argv)
-
     app = build_app(demo=True if args.demo else None)
     try:
         if args.telegram:
