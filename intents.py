@@ -48,11 +48,7 @@ NAV_PREFIX = (
     "marca el curso a ",
     "marca curso para ",
     "marca el curso ",
-    "marca el curos para ",
-    "marca el curos a ",
-    "marca el curos ",
     "curso para ",
-    "curos para ",
     "envia el destino a ",
     "enviar destino a ",
     "ir a ",
@@ -75,16 +71,13 @@ def is_deny(text: str) -> bool:
 
 def navigation_destination(text: str) -> Optional[str]:
     raw = (text or "").strip()
-    t = fold(raw).replace("curos", "curso")
-    raw_norm = raw.replace("curos", "curso").replace("Curos", "curso")
+    t = fold(raw)
     if not t:
         return None
     for prefix in NAV_PREFIX:
-        idx = t.find(prefix.replace("curos", "curso"))
-        if idx < 0:
-            idx = t.find(prefix)
+        idx = t.find(prefix)
         if idx >= 0:
-            dest = raw_norm[idx + len(prefix.replace("curos", "curso")) :].strip(" .,;?")
+            dest = raw[idx + len(prefix) :].strip(" .,;?")
             return dest or None
     if "unicentro" in t:
         return "Unicentro"
