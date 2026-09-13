@@ -21,8 +21,8 @@ Honesty:
 - Use only the latest tool JSON. If ok=false, say you could not reach the car.
 - If state is asleep/offline, say you are asleep. Do not reuse old battery numbers.
 - get_vehicle does not wake you. To wake, call wake_vehicle.
-- Unlock doors and send_navigation need user confirm. Lock and climate run immediately.
-- Do not set confirmed=true yourself.
+- Unlock and navigation need confirm. Lock and climate run immediately.
+- If a lock tool returns already=true, say the doors were already in that state. Do not claim you just changed them.
 Never reveal tokens."""
 
 CONFIRM_WRITES = {"unlock_doors"}
@@ -33,8 +33,8 @@ TOOLS = [
     {"type": "function", "function": {"name": "wake_vehicle", "description": "Wake the car, then read battery.", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "estimate_trip", "description": "Distance + estimated arrival %.", "parameters": {"type": "object", "properties": {"destination": {"type": "string"}}, "required": ["destination"]}}},
     {"type": "function", "function": {"name": "send_navigation", "description": "Send destination to the map after confirm.", "parameters": {"type": "object", "properties": {"destination": {"type": "string"}, "confirmed": {"type": "boolean"}}, "required": ["destination", "confirmed"]}}},
-    {"type": "function", "function": {"name": "lock_doors", "description": "Lock doors immediately. No confirm.", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "unlock_doors", "description": "Unlock doors. Needs confirm in code.", "parameters": {"type": "object", "properties": {"confirmed": {"type": "boolean"}}}}},
+    {"type": "function", "function": {"name": "lock_doors", "description": "Lock doors immediately. If already locked, report already=true.", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "unlock_doors", "description": "Unlock doors. Needs confirm. If already unlocked, report already=true.", "parameters": {"type": "object", "properties": {"confirmed": {"type": "boolean"}}}}},
     {"type": "function", "function": {"name": "climate_on", "description": "Start climate immediately.", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "climate_off", "description": "Stop climate immediately.", "parameters": {"type": "object", "properties": {}}}},
 ]
@@ -45,6 +45,14 @@ DENY_RE = re.compile(r"^(no|nop|cancel|cancela|cancelar|stop)\b", re.I)
 LABELS = {
     "unlock_doors": {"es": "abrir las puertas", "en": "unlock the doors"},
     "send_navigation": {"es": "mandarlo al mapa", "en": "send it to the map"},
+}
+MESSAGES = {
+    "lock_doors": "Listo. Ya cerré las puertas.",
+    "unlock_doors": "Listo. Ya abrí las puertas.",
+    "climate_on": "Listo. Encendí el clima.",
+    "climate_off": "Listo. Apagué el clima.",
+    "lock_already": "Las puertas ya estaban cerradas.",
+    "unlock_already": "Las puertas ya estaban abiertas.",
 }
 
 
@@ -124,11 +132,12 @@ class FamiliaAgent:
             print(f"[Agent] confirm {tool}")
             eventlog.log_event("confirm", tool=tool)
             result = await self._run_tool(tool, {"confirmed": True})
-            if result.get("ok"):
-                self._pending_write = None
-                final = result.get("message") or "Listo."
-            else:
-                final = f"No pude completar la acción: {result.get('error') or result}"
+            self._pending_write = None
+            final = result.get("message") or (
+                f"No pude completar la acción: {result.get('error') or result}"
+                if not result.get("ok")
+                else "Listo."
+            )
             self._history[chat_id].append({"role": "user", "content": user_text})
             self._history[chat_id].append({"role": "assistant", "content": final})
             return final
@@ -174,7 +183,7 @@ class FamiliaAgent:
                     result = await self._run_tool(name, _args(call))
                     if result.get("needs_confirm"):
                         pending_ask = self._ask_confirm(name, user_text)
-                    elif result.get("ok") and result.get("message") and name in WRITE_TOOLS:
+                    elif result.get("message") and name in WRITE_TOOLS:
                         immediate = result.get("message")
                     messages.append(
                         {
@@ -209,20 +218,41 @@ class FamiliaAgent:
             match = vehicles[0]
         return str((match or {}).get("state") or "unknown")
 
+    async def _current_locked(self) -> Optional[bool]:
+        if self._last_vehicle and self._last_vehicle.get("locked") is not None:
+            return bool(self._last_vehicle.get("locked"))
+        try:
+            state = await self._fleet_state()
+            if state != "online":
+                return None
+            snap = _public_snapshot(await self.tesla.get_vehicle_data(wake=False))
+            self._last_vehicle = snap
+            if snap.get("locked") is None:
+                return None
+            return bool(snap.get("locked"))
+        except TeslaAPIError:
+            return None
+
     async def _guarded_write(self, name: str, confirmed: bool, runner) -> Dict[str, Any]:
-        needs = name in CONFIRM_WRITES
-        if needs and not confirmed:
+        if name in CONFIRM_WRITES and not confirmed:
             self._pending_write = name
             return {"ok": False, "needs_confirm": True, "action": name}
+        if name in {"lock_doors", "unlock_doors"}:
+            locked = await self._current_locked()
+            if locked is True and name == "lock_doors":
+                return {"ok": True, "already": True, "locked": True, "message": MESSAGES["lock_already"]}
+            if locked is False and name == "unlock_doors":
+                return {"ok": True, "already": True, "locked": False, "message": MESSAGES["unlock_already"]}
         try:
             result = await runner()
             self._pending_write = None
-            return {"ok": True, "result": result, "message": {
-                "lock_doors": "Listo. Ya cerré las puertas.",
-                "unlock_doors": "Listo. Ya abrí las puertas.",
-                "climate_on": "Listo. Encendí el clima.",
-                "climate_off": "Listo. Apagué el clima.",
-            }.get(name, "Listo.")}
+            if name == "lock_doors":
+                if self._last_vehicle is not None:
+                    self._last_vehicle["locked"] = True
+            if name == "unlock_doors":
+                if self._last_vehicle is not None:
+                    self._last_vehicle["locked"] = False
+            return {"ok": True, "already": False, "result": result, "message": MESSAGES.get(name, "Listo.")}
         except TeslaAPIError as exc:
             return {"ok": False, "error": str(exc)}
 
