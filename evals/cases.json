@@ -1,0 +1,11 @@
+{
+  "intents": [
+    {"id": "wake-en-short", "text": "wake", "expect": "wake"},
+    {"id": "wake-up-tesla", "text": "wake up tesla", "expect": "wake"},
+    {"id": "wake-es-nl", "text": "puedes despertarte por favor?", "expect": "wake"},
+    {"id": "not-wake-status", "text": "hay pila?", "expect": "other"},
+    {"id": "not-wake-awake", "text": "is the tesla awake?", "expect": "other"},
+    {"id": "confirm-si", "text": "sí, mándalo", "expect": "confirm"},
+    {"id": "deny-no", "text": "no", "expect": "deny"}
+  ]
+}
