@@ -1,7 +1,4 @@
-"""Family agent: natural language in, live Tesla tools, ES or EN out.
-
-Source and comments are English. The model mirrors the user's language.
-"""
+"""Family agent: natural language in, live Tesla tools, ES or EN out."""
 
 from __future__ import annotations
 
@@ -16,83 +13,40 @@ from tesla_client import TeslaAPIError, TeslaClient
 import places
 
 SYSTEM = """You are this Tesla Model Y talking to the family in Colombia.
-First person as the car.
+First person as the car. Same language as the user. 2 to 4 short sentences.
 
-Language: same as the user (Spanish or English). Do not mix.
-Length: 2 to 4 short sentences. No lists. Do not repeat the same fact twice.
-
-Honesty rules (never break):
-- Never invent battery, range, GPS, lock, climate, or whether you are awake.
-- Only state facts that appear in the latest tool JSON.
-- If a tool returns ok=false or error, say you could not reach the car. Do not reuse old numbers.
-- If vehicle.state is asleep/offline, say you are asleep. Do not say you are on.
-- After wake_vehicle, say you are awake only if state is online.
-- get_vehicle does not wake you. If the user asked to wake, call wake_vehicle.
-
-Reach a place: get_vehicle then estimate_trip. Arrival % is an estimate.
-Ask once if they want it on the map. Confirmation is handled in code.
+Honesty:
+- Never invent battery, range, GPS, lock, climate, or awake/asleep.
+- Use only the latest tool JSON. If ok=false, say you could not reach the car.
+- If state is asleep/offline, say you are asleep. Do not reuse old battery numbers.
+- get_vehicle does not wake you. To wake, call wake_vehicle.
+- lock/unlock/climate require user confirm. If a tool returns needs_confirm, ask once.
+- Do not call lock/unlock/climate with confirmed=true; code does that after sí/yes.
 Never reveal tokens."""
 
+WRITE_TOOLS = {"lock_doors", "unlock_doors", "climate_on", "climate_off"}
+
 TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_vehicle",
-            "description": "Read live snapshot WITHOUT waking the car. If asleep, state is asleep/offline and battery may be missing.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "wake_vehicle",
-            "description": "Wake the Model Y and then read live battery/range. Use when the user asks to wake, turn on, or despierta/wake up.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "estimate_trip",
-            "description": "Geocode a destination, driving distance from the car, estimated arrival battery %. Not Tesla official planner.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "destination": {
-                        "type": "string",
-                        "description": "Place name, e.g. Unicentro, El Rancho, address in Bogotá",
-                    }
-                },
-                "required": ["destination"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "send_navigation",
-            "description": "Send a destination to the Model Y map. Only after the user confirms.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "destination": {"type": "string"},
-                    "confirmed": {
-                        "type": "boolean",
-                        "description": "True only if the user just confirmed this send.",
-                    },
-                },
-                "required": ["destination", "confirmed"],
-            },
-        },
-    },
+    {"type": "function", "function": {"name": "get_vehicle", "description": "Read snapshot WITHOUT waking. Asleep cars have no fresh battery.", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "wake_vehicle", "description": "Wake the car, then read battery.", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "estimate_trip", "description": "Distance + estimated arrival %.", "parameters": {"type": "object", "properties": {"destination": {"type": "string"}}, "required": ["destination"]}}},
+    {"type": "function", "function": {"name": "send_navigation", "description": "Send destination to the map after confirm.", "parameters": {"type": "object", "properties": {"destination": {"type": "string"}, "confirmed": {"type": "boolean"}}, "required": ["destination", "confirmed"]}}},
+    {"type": "function", "function": {"name": "lock_doors", "description": "Lock doors. Code confirms; do not set confirmed true.", "parameters": {"type": "object", "properties": {"confirmed": {"type": "boolean"}}}}},
+    {"type": "function", "function": {"name": "unlock_doors", "description": "Unlock doors. Needs confirm.", "parameters": {"type": "object", "properties": {"confirmed": {"type": "boolean"}}}}},
+    {"type": "function", "function": {"name": "climate_on", "description": "Start climate. Needs confirm.", "parameters": {"type": "object", "properties": {"confirmed": {"type": "boolean"}}}}},
+    {"type": "function", "function": {"name": "climate_off", "description": "Stop climate. Needs confirm.", "parameters": {"type": "object", "properties": {"confirmed": {"type": "boolean"}}}}},
 ]
 
 MAX_HISTORY = 8
-
-CONFIRM_RE = re.compile(
-    r"^(si|s[ií]|yes|ok|okay|dale|claro|mando|mandalo|mandalo|envialo|envialo|send it|send)\b",
-    re.I,
-)
+CONFIRM_RE = re.compile(r"^(si|s[ií]|yes|ok|okay|dale|claro|mando|mandalo|envialo|send it|send)\b", re.I)
+DENY_RE = re.compile(r"^(no|nop|cancel|cancela|cancelar|stop)\b", re.I)
+LABELS = {
+    "lock_doors": {"es": "cerrar las puertas", "en": "lock the doors"},
+    "unlock_doors": {"es": "abrir las puertas", "en": "unlock the doors"},
+    "climate_on": {"es": "encender el clima", "en": "turn climate on"},
+    "climate_off": {"es": "apagar el clima", "en": "turn climate off"},
+    "send_navigation": {"es": "mandarlo al mapa", "en": "send it to the map"},
+}
 
 
 def _fold(text: str) -> str:
@@ -101,30 +55,25 @@ def _fold(text: str) -> str:
 
 
 def _is_confirm(text: str) -> bool:
-    t = _fold(text).replace("á", "a")
-    t = t.replace(",", " ")
+    t = _fold(text).replace(",", " ")
     return bool(CONFIRM_RE.search(t)) or "mandalo" in t or "envialo" in t or "send it" in t
+
+
+def _is_deny(text: str) -> bool:
+    return bool(DENY_RE.search(_fold(text)))
+
+
+def _english(text: str) -> bool:
+    t = _fold(text)
+    return bool(re.search(r"\b(lock|unlock|climate|wake|yes|please|the|doors)\b", t))
 
 
 def _public_snapshot(data: Dict[str, Any]) -> Dict[str, Any]:
     keys = (
-        "vin",
-        "display_name",
-        "state",
-        "drive_state_label",
-        "shift_state",
-        "battery_level",
-        "battery_range_km",
-        "charge_limit_soc",
-        "charging_state",
-        "odometer_km",
-        "latitude",
-        "longitude",
-        "inside_temp",
-        "outside_temp",
-        "is_climate_on",
-        "locked",
-        "demo",
+        "vin", "display_name", "state", "drive_state_label", "shift_state",
+        "battery_level", "battery_range_km", "charge_limit_soc", "charging_state",
+        "odometer_km", "latitude", "longitude", "inside_temp", "outside_temp",
+        "is_climate_on", "locked", "demo",
     )
     return {k: data.get(k) for k in keys}
 
@@ -146,38 +95,53 @@ class FamiliaAgent:
         self._history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=MAX_HISTORY))
         self._last_vehicle: Optional[Dict[str, Any]] = None
         self._pending_nav: Optional[str] = None
+        self._pending_write: Optional[str] = None
 
     @property
     def enabled(self) -> bool:
         return self.llm.configured
 
+    def _ask_confirm(self, tool: str, user_text: str) -> str:
+        lang = "en" if _english(user_text) else "es"
+        label = LABELS.get(tool, {}).get(lang, tool)
+        if lang == "en":
+            return f"I can {label}. Say *yes* to do it, or *no* to cancel."
+        return f"Puedo {label}. Di *sí* para hacerlo, o *no* para cancelar."
+
     async def reply(self, user_text: str, chat_id: str = "family") -> str:
         if not self.enabled:
-            return (
-                "AI agent is not configured. Set OPENROUTER_API_KEY and LLM_MODEL, "
-                "or use commands: estado, luces, ayuda."
-            )
+            return "AI agent is not configured. Use commands: estado, luces, ayuda."
+
+        if self._pending_write and _is_deny(user_text):
+            self._pending_write = None
+            self._pending_nav = None
+            final = "Ok, cancelled." if _english(user_text) else "Listo, cancelado."
+            self._history[chat_id].append({"role": "user", "content": user_text})
+            self._history[chat_id].append({"role": "assistant", "content": final})
+            return final
+
+        if self._pending_write and _is_confirm(user_text):
+            tool = self._pending_write
+            print(f"[Agent] confirm {tool}")
+            result = await self._run_tool(tool, {"confirmed": True})
+            if result.get("ok"):
+                self._pending_write = None
+                final = result.get("message") or "Listo."
+            else:
+                final = f"No pude completar la acción: {result.get('error') or result}"
+            self._history[chat_id].append({"role": "user", "content": user_text})
+            self._history[chat_id].append({"role": "assistant", "content": final})
+            return final
+
         if self._pending_nav and _is_confirm(user_text):
             dest = self._pending_nav
             print(f"[Agent] confirm send_navigation {dest}")
-            try:
-                result = await self._run_tool(
-                    "send_navigation", {"destination": dest, "confirmed": True}
-                )
-            except TeslaAPIError as exc:
-                result = {"ok": False, "error": str(exc)}
+            result = await self._run_tool("send_navigation", {"destination": dest, "confirmed": True})
             if result.get("ok"):
                 self._pending_nav = None
-                final = (
-                    f"Listo. Ya mandé *{dest}* al mapa del Y. "
-                    f"Revisa la pantalla del carro."
-                )
+                final = f"Listo. Ya mandé *{dest}* al mapa del Y. Revisa la pantalla del carro."
             else:
-                final = (
-                    f"Quise mandar *{dest}* al mapa pero Tesla dijo: "
-                    f"{result.get('error') or result}. "
-                    f"Puedes probar el comando: ir a {dest}"
-                )
+                final = f"Quise mandar *{dest}* al mapa pero Tesla dijo: {result.get('error') or result}"
             self._history[chat_id].append({"role": "user", "content": user_text})
             self._history[chat_id].append({"role": "assistant", "content": final})
             return final
@@ -188,6 +152,7 @@ class FamiliaAgent:
         messages.append({"role": "user", "content": user_text})
         try:
             final = ""
+            pending_ask = None
             for _ in range(4):
                 msg = await self.llm.chat(messages, TOOLS, max_tokens=1600)
                 tool_calls = msg.get("tool_calls") or []
@@ -195,38 +160,33 @@ class FamiliaAgent:
                 if not tool_calls:
                     if not content:
                         nudge = await self.llm.chat(
-                            messages
-                            + [
-                                {
-                                    "role": "user",
-                                    "content": "Answer now in 2-4 sentences using only the latest tool JSON. If a tool failed, say you could not reach the car.",
-                                }
-                            ],
+                            messages + [{"role": "user", "content": "Answer in 2-4 sentences using only the latest tool JSON."}],
                             None,
                             max_tokens=400,
                         )
                         content = (nudge.get("content") or "").strip()
-                    final = content or "No pude armar una respuesta honesta. Prueba estado."
+                    final = pending_ask or content or "No pude armar una respuesta honesta. Prueba estado."
                     break
                 messages.append(msg)
                 for call in tool_calls:
                     name = (call.get("function") or {}).get("name") or ""
-                    call_id = call.get("id") or "tool"
                     result = await self._run_tool(name, _args(call))
+                    if result.get("needs_confirm"):
+                        pending_ask = self._ask_confirm(name, user_text)
                     messages.append(
                         {
                             "role": "tool",
-                            "tool_call_id": call_id,
+                            "tool_call_id": call.get("id") or "tool",
                             "content": json.dumps(result, ensure_ascii=False),
                         }
                     )
             else:
-                final = "Tardé pidiendo datos. Escribe estado o pregunta de nuevo."
+                final = pending_ask or "Tardé pidiendo datos. Escribe estado."
             self._history[chat_id].append({"role": "user", "content": user_text})
             self._history[chat_id].append({"role": "assistant", "content": final})
             return final
         except LLMError as exc:
-            return f"No pude hablar con el modelo ({exc}). Usa `estado` mientras tanto."
+            return f"No pude hablar con el modelo ({exc}). Usa `estado`."
         except TeslaAPIError as exc:
             return f"No pude hablar con el carro: {exc}"
 
@@ -245,6 +205,22 @@ class FamiliaAgent:
             match = vehicles[0]
         return str((match or {}).get("state") or "unknown")
 
+    async def _guarded_write(self, name: str, confirmed: bool, runner) -> Dict[str, Any]:
+        if not confirmed:
+            self._pending_write = name
+            return {"ok": False, "needs_confirm": True, "action": name}
+        try:
+            result = await runner()
+            self._pending_write = None
+            return {"ok": True, "result": result, "message": {
+                "lock_doors": "Listo. Ya cerré las puertas.",
+                "unlock_doors": "Listo. Ya abrí las puertas.",
+                "climate_on": "Listo. Encendí el clima.",
+                "climate_off": "Listo. Apagué el clima.",
+            }.get(name, "Listo.")}
+        except TeslaAPIError as exc:
+            return {"ok": False, "error": str(exc)}
+
     async def _run_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         print(f"[Agent tool] {name} {args}")
         if name == "get_vehicle":
@@ -253,16 +229,14 @@ class FamiliaAgent:
                 if state != "online":
                     snap = {"state": state}
                     self._last_vehicle = snap
-                    return {"ok": True, "asleep": True, "vehicle": snap}
+                    return {"ok": True, "asleep": True, "vehicle": snap, "note": "Do not quote old battery figures."}
                 data = await self.tesla.get_vehicle_data(wake=False)
                 snap = _public_snapshot(data)
                 self._last_vehicle = snap
-                return {"ok": True, "asleep": snap.get("state") != "online", "vehicle": snap}
+                return {"ok": True, "asleep": False, "vehicle": snap}
             except TeslaAPIError as exc:
                 if exc.status_code == 408:
-                    snap = {"state": "asleep"}
-                    self._last_vehicle = snap
-                    return {"ok": True, "asleep": True, "vehicle": snap}
+                    return {"ok": True, "asleep": True, "vehicle": {"state": "asleep"}, "note": "Do not quote old battery figures."}
                 return {"ok": False, "error": str(exc)}
         if name == "wake_vehicle":
             try:
@@ -271,20 +245,11 @@ class FamiliaAgent:
                 snap: Dict[str, Any] = {"state": state}
                 if state == "online":
                     try:
-                        data = await self.tesla.get_vehicle_data(wake=False)
-                        snap = _public_snapshot(data)
+                        snap = _public_snapshot(await self.tesla.get_vehicle_data(wake=False))
                     except TeslaAPIError as exc:
-                        return {
-                            "ok": False,
-                            "state": state,
-                            "error": f"woke but could not read data: {exc}",
-                        }
+                        return {"ok": False, "state": state, "error": f"woke but could not read data: {exc}"}
                 self._last_vehicle = snap
-                return {
-                    "ok": state == "online",
-                    "state": snap.get("state") or state,
-                    "vehicle": snap,
-                }
+                return {"ok": state == "online", "state": snap.get("state") or state, "vehicle": snap}
             except TeslaAPIError as exc:
                 return {"ok": False, "error": str(exc)}
         if name == "estimate_trip":
@@ -295,23 +260,25 @@ class FamiliaAgent:
             return result
         if name == "send_navigation":
             dest = str(args.get("destination") or "").strip()
-            confirmed = bool(args.get("confirmed"))
             if not dest:
                 return {"ok": False, "error": "empty destination"}
-            if not confirmed:
+            if not args.get("confirmed"):
                 self._pending_nav = dest
-                return {
-                    "ok": False,
-                    "needs_confirm": True,
-                    "destination": dest,
-                    "message": "Ask the user to confirm before sending to the car map.",
-                }
+                return {"ok": False, "needs_confirm": True, "destination": dest}
             try:
-                result = await self.tesla.send_navigation(dest)
+                sent = await self.tesla.send_navigation(dest)
                 self._pending_nav = None
-                return {"ok": True, "sent": dest, "result": result}
+                return {"ok": True, "sent": dest, "result": sent}
             except TeslaAPIError as exc:
                 return {"ok": False, "error": str(exc)}
+        if name in WRITE_TOOLS:
+            runners = {
+                "lock_doors": lambda: self.tesla.lock_doors(True),
+                "unlock_doors": lambda: self.tesla.lock_doors(False),
+                "climate_on": self.tesla.precondition,
+                "climate_off": self.tesla.stop_precondition,
+            }
+            return await self._guarded_write(name, bool(args.get("confirmed")), runners[name])
         return {"ok": False, "error": f"unknown tool {name}"}
 
     async def _estimate_trip(self, destination: str) -> Dict[str, Any]:
@@ -321,8 +288,7 @@ class FamiliaAgent:
         vehicle = self._last_vehicle
         if vehicle is None or vehicle.get("state") != "online":
             try:
-                data = await self.tesla.get_vehicle_data()
-                vehicle = _public_snapshot(data)
+                vehicle = _public_snapshot(await self.tesla.get_vehicle_data())
                 self._last_vehicle = vehicle
             except TeslaAPIError as exc:
                 return {"ok": False, "error": str(exc)}
@@ -331,9 +297,7 @@ class FamiliaAgent:
         if lat is not None and lon is not None:
             route_km = places.driving_km((float(lat), float(lon)), (dest["lat"], dest["lon"]))
         estimate = places.estimate_arrival_soc(
-            vehicle.get("battery_level"),
-            vehicle.get("battery_range_km"),
-            route_km,
+            vehicle.get("battery_level"), vehicle.get("battery_range_km"), route_km
         )
         return {
             "ok": True,
