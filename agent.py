@@ -16,15 +16,20 @@ from tesla_client import TeslaAPIError, TeslaClient
 import places
 
 SYSTEM = """You are this Tesla Model Y talking to the family in Colombia.
-First person as the car: "estoy al 65%", "puedo llegar", "te lo mando al mapa".
+First person as the car.
 
 Language: same as the user (Spanish or English). Do not mix.
 Length: 2 to 4 short sentences. No lists. Do not repeat the same fact twice.
-Do not recap the whole snapshot unless asked. One battery number + one range is enough.
 
-Never invent battery, range, GPS, lock, or arrival %. Tools only.
-Reach a place: get_vehicle then estimate_trip. Say km + estimated arrival % if the tool has them.
-Call arrival % an estimate, not Tesla's planner.
+Honesty rules (never break):
+- Never invent battery, range, GPS, lock, climate, or whether you are awake.
+- Only state facts that appear in the latest tool JSON.
+- If a tool returns ok=false or error, say you could not reach the car. Do not reuse old numbers.
+- If vehicle.state is asleep/offline, say you are asleep. Do not say you are on.
+- After wake_vehicle, say you are awake only if state is online.
+- get_vehicle does not wake you. If the user asked to wake, call wake_vehicle.
+
+Reach a place: get_vehicle then estimate_trip. Arrival % is an estimate.
 Ask once if they want it on the map. Confirmation is handled in code.
 Never reveal tokens."""
 
@@ -33,7 +38,15 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_vehicle",
-            "description": "Live Model Y snapshot: battery, range, park/drive, charge, climate, lock, lat/lon if present.",
+            "description": "Read live snapshot WITHOUT waking the car. If asleep, state is asleep/offline and battery may be missing.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "wake_vehicle",
+            "description": "Wake the Model Y and then read live battery/range. Use when the user asks to wake, turn on, or despierta/wake up.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -186,14 +199,14 @@ class FamiliaAgent:
                             + [
                                 {
                                     "role": "user",
-                                    "content": "Answer now in 2-4 sentences using the tool results.",
+                                    "content": "Answer now in 2-4 sentences using only the latest tool JSON. If a tool failed, say you could not reach the car.",
                                 }
                             ],
                             None,
                             max_tokens=400,
                         )
                         content = (nudge.get("content") or "").strip()
-                    final = content or "Estoy aquí. Prueba otra vez o escribe estado."
+                    final = content or "No pude armar una respuesta honesta. Prueba estado."
                     break
                 messages.append(msg)
                 for call in tool_calls:
@@ -215,15 +228,65 @@ class FamiliaAgent:
         except LLMError as exc:
             return f"No pude hablar con el modelo ({exc}). Usa `estado` mientras tanto."
         except TeslaAPIError as exc:
-            return f"Tesla no respondió: {exc}"
+            return f"No pude hablar con el carro: {exc}"
+
+    async def _fleet_state(self) -> str:
+        try:
+            vehicles = await self.tesla.list_vehicles()
+        except TeslaAPIError:
+            return "unknown"
+        vin = (getattr(self.tesla, "vin", "") or "").upper()
+        match = None
+        for v in vehicles or []:
+            if str(v.get("vin", "")).upper() == vin:
+                match = v
+                break
+        if match is None and vehicles:
+            match = vehicles[0]
+        return str((match or {}).get("state") or "unknown")
 
     async def _run_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         print(f"[Agent tool] {name} {args}")
         if name == "get_vehicle":
-            data = await self.tesla.get_vehicle_data()
-            snap = _public_snapshot(data)
-            self._last_vehicle = snap
-            return {"ok": True, "vehicle": snap}
+            try:
+                state = await self._fleet_state()
+                if state != "online":
+                    snap = {"state": state}
+                    self._last_vehicle = snap
+                    return {"ok": True, "asleep": True, "vehicle": snap}
+                data = await self.tesla.get_vehicle_data(wake=False)
+                snap = _public_snapshot(data)
+                self._last_vehicle = snap
+                return {"ok": True, "asleep": snap.get("state") != "online", "vehicle": snap}
+            except TeslaAPIError as exc:
+                if exc.status_code == 408:
+                    snap = {"state": "asleep"}
+                    self._last_vehicle = snap
+                    return {"ok": True, "asleep": True, "vehicle": snap}
+                return {"ok": False, "error": str(exc)}
+        if name == "wake_vehicle":
+            try:
+                woke = await self.tesla.wake_up()
+                state = (woke or {}).get("state") or "unknown"
+                snap: Dict[str, Any] = {"state": state}
+                if state == "online":
+                    try:
+                        data = await self.tesla.get_vehicle_data(wake=False)
+                        snap = _public_snapshot(data)
+                    except TeslaAPIError as exc:
+                        return {
+                            "ok": False,
+                            "state": state,
+                            "error": f"woke but could not read data: {exc}",
+                        }
+                self._last_vehicle = snap
+                return {
+                    "ok": state == "online",
+                    "state": snap.get("state") or state,
+                    "vehicle": snap,
+                }
+            except TeslaAPIError as exc:
+                return {"ok": False, "error": str(exc)}
         if name == "estimate_trip":
             result = await self._estimate_trip(str(args.get("destination") or ""))
             dest = ((result.get("destination") or {}).get("query")) or args.get("destination")
@@ -256,10 +319,13 @@ class FamiliaAgent:
         if not dest:
             return {"ok": False, "error": f"could not geocode {destination}"}
         vehicle = self._last_vehicle
-        if vehicle is None:
-            data = await self.tesla.get_vehicle_data()
-            vehicle = _public_snapshot(data)
-            self._last_vehicle = vehicle
+        if vehicle is None or vehicle.get("state") != "online":
+            try:
+                data = await self.tesla.get_vehicle_data()
+                vehicle = _public_snapshot(data)
+                self._last_vehicle = vehicle
+            except TeslaAPIError as exc:
+                return {"ok": False, "error": str(exc)}
         lat, lon = vehicle.get("latitude"), vehicle.get("longitude")
         route_km = None
         if lat is not None and lon is not None:
