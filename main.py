@@ -36,7 +36,6 @@ def build_app(
     poll_seconds: Optional[float] = None,
     park_debounce_polls: int = 2,
 ) -> App:
-    """Wire Tesla + logger + Telegram + handler + monitor together."""
     tesla = TeslaClient(demo=demo)
     logger = TripLogger()
     telegram = TelegramBot()
@@ -68,23 +67,15 @@ def _banner(app: App) -> None:
         tg = "Telegram API"
     else:
         tg = "Telegram SETUP (falta CHAT_IDS)"
-    print("🚀 Tesla Familia Bot")
+    print("Tesla Familia Bot")
     print(f"   Tesla: {mode}  |  Notificaciones: {tg}")
     print(f"   Región API: {config.TESLA_REGION} → {config.get_tesla_base_url()}")
-    print(
-        "   Comandos: hola · estado · carga 80 · clima · ir a Unicentro · "
-        "bloquear · luces · viajes · ayuda"
-    )
     print("   Salir: exit / salir / Ctrl+C\n")
 
 
 async def run_cli(app: App) -> None:
     _banner(app)
     await app.monitor.start()
-    await app.handler.notify_family(
-        f"🚀 Tesla Familia Bot iniciado "
-        f"({'demo' if app.tesla.demo else 'live'}). Escribe `ayuda`."
-    )
     try:
         while True:
             try:
@@ -92,7 +83,7 @@ async def run_cli(app: App) -> None:
             except EOFError:
                 break
             if cmd.lower().strip() in {"exit", "quit", "salir"}:
-                print("👋 Hasta luego!")
+                print("Hasta luego")
                 break
             await app.handler.handle(cmd)
     finally:
@@ -100,11 +91,8 @@ async def run_cli(app: App) -> None:
 
 
 async def run_monitor_only(app: App) -> None:
-    print("📡 Monitor mode (viajes + recordatorios de carga). Ctrl+C para salir.")
+    print("Monitor mode. Ctrl+C para salir.")
     await app.monitor.start()
-    await app.handler.notify_family(
-        "📡 Monitor de viajes activo. Te aviso al terminar cada viaje."
-    )
     try:
         while True:
             await asyncio.sleep(3600)
@@ -115,7 +103,7 @@ async def run_monitor_only(app: App) -> None:
 
 
 async def run_cli_no_monitor(app: App) -> None:
-    print("🚀 Tesla Familia Bot (CLI only — sin monitor de viajes)")
+    print("Tesla Familia Bot (CLI only)")
     while True:
         try:
             cmd = await asyncio.to_thread(input, "Command: ")
@@ -127,41 +115,28 @@ async def run_cli_no_monitor(app: App) -> None:
 
 
 async def run_telegram(app: App, *, setup: bool = False) -> None:
-    """iPhone path: long-poll Telegram + trip monitor on the Mac."""
     _banner(app)
     if not app.telegram.token:
-        print(
-            "❌ Falta TELEGRAM_BOT_TOKEN en .env\n"
-            "   Guía: docs/TELEGRAM_SETUP.md  (BotFather → /newbot)"
-        )
+        print("Falta TELEGRAM_BOT_TOKEN en .env — docs/TELEGRAM_SETUP.md")
         return
 
     try:
         me = await app.telegram.get_me()
     except Exception as exc:
-        print(
-            f"❌ No pude hablar con api.telegram.org: {exc}\n"
-            "   Red de trabajo / Zscaler a veces bloquea Telegram.\n"
-            "   Prueba hotspot o red de casa."
-        )
+        print(f"No pude hablar con api.telegram.org: {exc}")
         return
 
     if not me.get("ok"):
-        print(f"❌ Token rechazado por Telegram: {me}")
-        print("   Revisa TELEGRAM_BOT_TOKEN (sin espacios, sin comillas).")
+        print(f"Token rechazado por Telegram: {me}")
         return
 
     result = me.get("result") or {}
     username = result.get("username") or "?"
     print(f"   Bot: @{username}")
-    print("   Guía: docs/TELEGRAM_SETUP.md")
 
     if not setup:
         await app.monitor.start()
-        if app.telegram.commands_allowed:
-            await app.handler.notify_family(
-                "🚀 Tesla Familia listo en Telegram. Prueba `estado` o `ayuda`."
-            )
+        print("[Telegram] listening — no startup ping to the family chat")
 
     try:
         await app.telegram.poll_commands(app.handler, setup=setup)
@@ -171,31 +146,11 @@ async def run_telegram(app: App, *, setup: bool = False) -> None:
 
 async def async_main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Tesla Familia Bot")
-    parser.add_argument(
-        "--monitor",
-        action="store_true",
-        help="Solo TripMonitor + notificaciones (sin CLI)",
-    )
-    parser.add_argument(
-        "--no-monitor",
-        action="store_true",
-        help="CLI sin TripMonitor en segundo plano",
-    )
-    parser.add_argument(
-        "--telegram",
-        action="store_true",
-        help="Escuchar comandos desde Telegram en el iPhone (long poll)",
-    )
-    parser.add_argument(
-        "--setup",
-        action="store_true",
-        help="Con --telegram: solo revelar chat id, no ejecutar comandos del carro",
-    )
-    parser.add_argument(
-        "--demo",
-        action="store_true",
-        help="Forzar modo demo (sin API Tesla real)",
-    )
+    parser.add_argument("--monitor", action="store_true")
+    parser.add_argument("--no-monitor", action="store_true")
+    parser.add_argument("--telegram", action="store_true")
+    parser.add_argument("--setup", action="store_true")
+    parser.add_argument("--demo", action="store_true")
     args = parser.parse_args(argv)
 
     app = build_app(demo=True if args.demo else None)
