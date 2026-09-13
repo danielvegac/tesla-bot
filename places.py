@@ -24,6 +24,23 @@ PLACE_ALIASES = {
     "casa": "Bogotá, Colombia",
 }
 
+SHORT_NAMES = {
+    "unicentro": "Unicentro",
+    "unicentro bogota": "Unicentro",
+    "unicentro bogotá": "Unicentro",
+    "el rancho": "El Rancho",
+    "club campestre el rancho": "El Rancho",
+    "rancho": "El Rancho",
+}
+
+
+def short_label(place: Dict[str, Any]) -> str:
+    q = str(place.get("query") or "").strip().lower()
+    if q in SHORT_NAMES:
+        return SHORT_NAMES[q]
+    label = str(place.get("label") or place.get("query") or "").strip()
+    return label.split(",")[0].strip() or label
+
 
 def _http_json(url: str, timeout: float = 20.0) -> Any:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
@@ -51,13 +68,15 @@ def resolve_place(query: str) -> Optional[Dict[str, Any]]:
         return None
     hit = hits[0]
     try:
-        return {
+        place = {
             "query": q,
             "search": search,
             "label": hit.get("display_name") or search,
             "lat": float(hit["lat"]),
             "lon": float(hit["lon"]),
         }
+        place["short"] = short_label(place)
+        return place
     except (KeyError, TypeError, ValueError):
         return None
 
