@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from llm import LLMClient, LLMError
 from tesla_client import TeslaAPIError, TeslaClient
 import places
+import eventlog
 
 SYSTEM = """You are this Tesla Model Y talking to the family in Colombia.
 First person as the car. Same language as the user. 2 to 4 short sentences.
@@ -20,31 +21,29 @@ Honesty:
 - Use only the latest tool JSON. If ok=false, say you could not reach the car.
 - If state is asleep/offline, say you are asleep. Do not reuse old battery numbers.
 - get_vehicle does not wake you. To wake, call wake_vehicle.
-- lock/unlock/climate require user confirm. If a tool returns needs_confirm, ask once.
-- Do not call lock/unlock/climate with confirmed=true; code does that after sí/yes.
+- Unlock doors and send_navigation need user confirm. Lock and climate run immediately.
+- Do not set confirmed=true yourself.
 Never reveal tokens."""
 
+CONFIRM_WRITES = {"unlock_doors"}
 WRITE_TOOLS = {"lock_doors", "unlock_doors", "climate_on", "climate_off"}
 
 TOOLS = [
-    {"type": "function", "function": {"name": "get_vehicle", "description": "Read snapshot WITHOUT waking. Asleep cars have no fresh battery.", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "get_vehicle", "description": "Read snapshot WITHOUT waking.", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "wake_vehicle", "description": "Wake the car, then read battery.", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "estimate_trip", "description": "Distance + estimated arrival %.", "parameters": {"type": "object", "properties": {"destination": {"type": "string"}}, "required": ["destination"]}}},
     {"type": "function", "function": {"name": "send_navigation", "description": "Send destination to the map after confirm.", "parameters": {"type": "object", "properties": {"destination": {"type": "string"}, "confirmed": {"type": "boolean"}}, "required": ["destination", "confirmed"]}}},
-    {"type": "function", "function": {"name": "lock_doors", "description": "Lock doors. Code confirms; do not set confirmed true.", "parameters": {"type": "object", "properties": {"confirmed": {"type": "boolean"}}}}},
-    {"type": "function", "function": {"name": "unlock_doors", "description": "Unlock doors. Needs confirm.", "parameters": {"type": "object", "properties": {"confirmed": {"type": "boolean"}}}}},
-    {"type": "function", "function": {"name": "climate_on", "description": "Start climate. Needs confirm.", "parameters": {"type": "object", "properties": {"confirmed": {"type": "boolean"}}}}},
-    {"type": "function", "function": {"name": "climate_off", "description": "Stop climate. Needs confirm.", "parameters": {"type": "object", "properties": {"confirmed": {"type": "boolean"}}}}},
+    {"type": "function", "function": {"name": "lock_doors", "description": "Lock doors immediately. No confirm.", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "unlock_doors", "description": "Unlock doors. Needs confirm in code.", "parameters": {"type": "object", "properties": {"confirmed": {"type": "boolean"}}}}},
+    {"type": "function", "function": {"name": "climate_on", "description": "Start climate immediately.", "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "climate_off", "description": "Stop climate immediately.", "parameters": {"type": "object", "properties": {}}}},
 ]
 
 MAX_HISTORY = 8
 CONFIRM_RE = re.compile(r"^(si|s[ií]|yes|ok|okay|dale|claro|mando|mandalo|envialo|send it|send)\b", re.I)
 DENY_RE = re.compile(r"^(no|nop|cancel|cancela|cancelar|stop)\b", re.I)
 LABELS = {
-    "lock_doors": {"es": "cerrar las puertas", "en": "lock the doors"},
     "unlock_doors": {"es": "abrir las puertas", "en": "unlock the doors"},
-    "climate_on": {"es": "encender el clima", "en": "turn climate on"},
-    "climate_off": {"es": "apagar el clima", "en": "turn climate off"},
     "send_navigation": {"es": "mandarlo al mapa", "en": "send it to the map"},
 }
 
@@ -123,6 +122,7 @@ class FamiliaAgent:
         if self._pending_write and _is_confirm(user_text):
             tool = self._pending_write
             print(f"[Agent] confirm {tool}")
+            eventlog.log_event("confirm", tool=tool)
             result = await self._run_tool(tool, {"confirmed": True})
             if result.get("ok"):
                 self._pending_write = None
@@ -153,6 +153,7 @@ class FamiliaAgent:
         try:
             final = ""
             pending_ask = None
+            immediate = None
             for _ in range(4):
                 msg = await self.llm.chat(messages, TOOLS, max_tokens=1600)
                 tool_calls = msg.get("tool_calls") or []
@@ -165,7 +166,7 @@ class FamiliaAgent:
                             max_tokens=400,
                         )
                         content = (nudge.get("content") or "").strip()
-                    final = pending_ask or content or "No pude armar una respuesta honesta. Prueba estado."
+                    final = pending_ask or immediate or content or "No pude armar una respuesta honesta. Prueba estado."
                     break
                 messages.append(msg)
                 for call in tool_calls:
@@ -173,6 +174,8 @@ class FamiliaAgent:
                     result = await self._run_tool(name, _args(call))
                     if result.get("needs_confirm"):
                         pending_ask = self._ask_confirm(name, user_text)
+                    elif result.get("ok") and result.get("message") and name in WRITE_TOOLS:
+                        immediate = result.get("message")
                     messages.append(
                         {
                             "role": "tool",
@@ -181,9 +184,10 @@ class FamiliaAgent:
                         }
                     )
             else:
-                final = pending_ask or "Tardé pidiendo datos. Escribe estado."
+                final = pending_ask or immediate or "Tardé pidiendo datos. Escribe estado."
             self._history[chat_id].append({"role": "user", "content": user_text})
             self._history[chat_id].append({"role": "assistant", "content": final})
+            eventlog.log_event("turn", text=user_text[:200], preview=str(final)[:200])
             return final
         except LLMError as exc:
             return f"No pude hablar con el modelo ({exc}). Usa `estado`."
@@ -206,7 +210,8 @@ class FamiliaAgent:
         return str((match or {}).get("state") or "unknown")
 
     async def _guarded_write(self, name: str, confirmed: bool, runner) -> Dict[str, Any]:
-        if not confirmed:
+        needs = name in CONFIRM_WRITES
+        if needs and not confirmed:
             self._pending_write = name
             return {"ok": False, "needs_confirm": True, "action": name}
         try:
@@ -223,6 +228,7 @@ class FamiliaAgent:
 
     async def _run_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         print(f"[Agent tool] {name} {args}")
+        eventlog.log_event("tool", name=name, args=args)
         if name == "get_vehicle":
             try:
                 state = await self._fleet_state()
