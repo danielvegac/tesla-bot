@@ -14,7 +14,6 @@ import math
 
 USER_AGENT = "TeslaFamiliaBot/1.0 (github.com/danielvegac/tesla-bot)"
 
-# Aliases → search string for Nominatim (Bogotá family defaults)
 PLACE_ALIASES = {
     "unicentro": "Unicentro Bogotá, Colombia",
     "unicentro bogota": "Unicentro Bogotá, Colombia",
@@ -42,17 +41,25 @@ def resolve_place(query: str) -> Optional[Dict[str, Any]]:
         "https://nominatim.openstreetmap.org/search?"
         + urllib.parse.urlencode({"q": search, "format": "json", "limit": 1})
     )
-    hits = _http_json(url) or []
+    try:
+        hits = _http_json(url) or []
+    except Exception as exc:
+        print(f"[places] nominatim failed: {exc}")
+        return None
     if not hits:
+        print(f"[places] no pin for {q!r} (search={search!r})")
         return None
     hit = hits[0]
-    return {
-        "query": q,
-        "search": search,
-        "label": hit.get("display_name") or search,
-        "lat": float(hit["lat"]),
-        "lon": float(hit["lon"]),
-    }
+    try:
+        return {
+            "query": q,
+            "search": search,
+            "label": hit.get("display_name") or search,
+            "lat": float(hit["lat"]),
+            "lon": float(hit["lon"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def driving_km(origin: Tuple[float, float], dest: Tuple[float, float]) -> Optional[float]:
@@ -94,8 +101,6 @@ def estimate_arrival_soc(
         return {"ok": False, "reason": "range is zero"}
     used_frac = route_km / float(battery_range_km)
     arrival = float(battery_level) * (1.0 - used_frac)
-    arrival_buffered = float(battery_level) * (1.0 - used_frac / max(1.0 - buffer_frac, 0.5))
-    # simpler buffer: subtract extra 12% of trip energy
     arrival_buffered = arrival - (float(battery_level) * used_frac * buffer_frac)
     comfortable = arrival_buffered >= 15
     tight = 8 <= arrival_buffered < 15
