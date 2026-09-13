@@ -23,14 +23,15 @@ def is_wake(text: str) -> bool:
         "despertar",
         "despierta",
         "despiertate",
+        "despertarte",
     }:
         return True
     words = t.replace("?", " ").replace("!", " ").replace(",", " ").split()
     if "wake" in words and "awake" not in words:
         return True
-    if words and words[0] in {"despierta", "despertar", "despiertate"}:
-        return True
-    if "despiert" in t and any(w in t for w in ("por favor", "tesla", "carro", "auto")):
+    # Verb forms: despertar / despertarte (e) and despierta / despiertate (ie).
+    # Do not treat adjective "despierto" as a wake command.
+    if re.search(r"\bdespertar(?:te)?\b|\bdespierta(?:te)?\b", t):
         return True
     return False
 
