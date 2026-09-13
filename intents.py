@@ -44,6 +44,11 @@ NAV_PREFIX = (
     "marca el destino a ",
     "marca destino a ",
     "marca el destino ",
+    "marca el curso para ",
+    "marca el curso a ",
+    "marca curso para ",
+    "marca el curso ",
+    "curso para ",
     "envia el destino a ",
     "enviar destino a ",
     "ir a ",
@@ -78,4 +83,6 @@ def navigation_destination(text: str) -> Optional[str]:
         return "Unicentro"
     if "el rancho" in t or "club campestre" in t:
         return "Club Campestre El Rancho"
+    if "myka" in t:
+        return "Myka Calle 122 Bogota"
     return None
