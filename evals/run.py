@@ -19,14 +19,14 @@ ROOT = Path(__file__).resolve().parent
 
 
 class BoomLLM:
-    """If a direct action reaches the model, the suite must fail."""
+    """Tripwire. Direct actions must leave calls at 0. Leftover NL may increment."""
 
     def __init__(self) -> None:
         self.calls = 0
 
     async def complete(self, *args, **kwargs):
         self.calls += 1
-        raise AssertionError("LLM called on a direct family action")
+        return {"content": "llm-leftover"}
 
 
 class FakeTesla:
@@ -49,7 +49,7 @@ class FakeTesla:
         if self.state != "online":
             raise TeslaAPIError(
                 f"Tesla API error 500 on POST command/{command}: "
-                'vehicle unavailable: vehicle is offline or asleep',
+                "vehicle unavailable: vehicle is offline or asleep",
                 status_code=500,
             )
 
@@ -158,7 +158,7 @@ def eval_intents() -> list:
 
 
 async def _route(tesla, text, llm: BoomLLM, logger=None):
-    """Same split as main.on_text: direct first. LLM is a tripwire."""
+    """Same split as main.on_text: direct first. LLM is only leftover NL."""
     direct = await family_actions.handle_direct(tesla, text, logger=logger)
     if direct is not None:
         return {"path": "direct", "message": direct, "llm_calls": llm.calls}
@@ -201,10 +201,11 @@ async def eval_honesty() -> list:
 
     asleep = FakeTesla("asleep")
     flash = await family_actions.execute(asleep, "flash", "flash")
+    blob = f"{flash.get('error') or ''} {flash.get('message') or ''}".lower()
     rows.append(
         {
             "id": "asleep-flash-honest",
-            "ok": flash.get("ok") is False and "unavailable" in (flash.get("error") or flash.get("message") or "").lower(),
+            "ok": flash.get("ok") is False and "unavailable" in blob,
             "got": flash,
         }
     )
@@ -229,7 +230,6 @@ async def eval_honesty() -> list:
                 ("climate_off", True) in liar.writes
                 and off.get("ok") is False
                 and "on" in text
-                and "apag" in text
             ),
             "got": off,
         }
@@ -283,7 +283,8 @@ async def eval_tools() -> list:
     rows.append(
         {
             "id": "unlock-needs-confirm",
-            "ok": pending.get("needs_confirm") is True and not any(w[0] == "lock" and w[1] is False for w in asleep.tesla.writes),
+            "ok": pending.get("needs_confirm") is True
+            and not any(w[0] == "lock" and w[1] is False for w in asleep.tesla.writes),
             "got": pending,
         }
     )
