@@ -4,6 +4,14 @@ All notable changes and milestones for Tesla Familia Bot.
 
 ## [Unreleased]
 
+### 2026-09-14 — Direct car actions (no LLM lies)
+- Python owns flash / honk / lock / climate / set_temps before Qwen.
+- Wake copy is neutral agent voice (`Tesla despierto`), never feminine `despierta`.
+- Lock always POSTs `door_lock` (no stale `locked=true` short-circuit).
+- Climate copy only claims success after Tesla result; re-read `is_climate_on` when possible.
+- Trip-end Telegram now appends today's digest (count, km, % used, last SOC).
+- `set_temps` lives on TeslaClient when the Mac file has that method.
+
 ### 2026-09-14 — LFP hook + work pin scaffold
 - `command_handler.on_snapshot` now calls `lfp_reminder.on_snapshot`. First online poll seeds `logs/lfp_full.json`; weekly copy only after 7 days below 99%.
 - Work alias (`oficina` / `trabajo` / `jeeves`) resolves only if `WORK_LAT` + `WORK_LON` are set. No invented office coordinates.

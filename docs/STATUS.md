@@ -15,6 +15,8 @@
 | Home geofence 80 m | driveway `4.700454, -74.027738` |
 | LFP weekly hook | wired in `command_handler.on_snapshot` → `logs/lfp_full.json` |
 | Charge reminder | 35%, online and not charging |
+| Direct flash / honk / lock / climate | Python path, before LLM |
+| Daily trip digest on trip-end | count + km + % used + last SOC |
 
 ## Do not do
 

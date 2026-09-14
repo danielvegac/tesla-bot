@@ -7,6 +7,14 @@
     {"id": "not-wake-awake", "text": "is the tesla awake?", "expect": "other"},
     {"id": "confirm-si", "text": "sí, mándalo", "expect": "confirm"},
     {"id": "deny-no", "text": "no", "expect": "deny"},
-    {"id": "nav-oficina", "text": "marca el curso para oficina", "expect": "other"}
+    {"id": "nav-oficina", "text": "marca el curso para oficina", "expect": "other"},
+    {"id": "flash-en", "text": "flash", "expect": "flash"},
+    {"id": "flash-lights", "text": "Flash lights", "expect": "flash"},
+    {"id": "honk-en", "text": "Honk", "expect": "honk"},
+    {"id": "lock-block", "text": "Block doors", "expect": "lock"},
+    {"id": "lock-cierra", "text": "Cierra las puertas", "expect": "lock"},
+    {"id": "unlock-abre", "text": "Abre las puertas", "expect": "unlock"},
+    {"id": "climate-off-aire", "text": "Apaga el aire", "expect": "climate_off"},
+    {"id": "set-temp-18", "text": "Controla el clima. Ponlo en 18 grados", "expect": "set_temp"}
   ]
 }
