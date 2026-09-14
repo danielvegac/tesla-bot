@@ -9,14 +9,16 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import config
+from agent import FamiliaAgent
 from command_handler import CommandHandler
+import family_actions
 from telegram_bot import TelegramBot
 from tesla_client import TeslaAPIError, TeslaClient
 from trip_logger import TripLogger
 from trip_monitor import TripMonitor
 
 HELLO_ASLEEP = "Hola. Estoy en reposo. Escríbeme si me necesitas."
-HELLO_AWAKE = "Hola. Estoy despierto."
+HELLO_AWAKE = "Hola. Tesla despierto."
 HELLO_FALLBACK = "Hola. Ya estoy aquí."
 
 
@@ -163,8 +165,25 @@ async def run_telegram(app: App, *, setup: bool = False) -> None:
             print(f"[Telegram] hello: {line}")
             await app.handler.notify_family(line)
 
+    agent = FamiliaAgent(tesla=app.tesla)
+
+    async def on_text(cmd: str, chat_id: str) -> str:
+        print(f"[Telegram cmd] {cmd}")
+        direct = await family_actions.handle_direct(app.tesla, cmd, logger=app.logger)
+        if direct is not None:
+            await app.telegram.send_message(direct, chat_id=chat_id)
+            return direct
+        if agent.enabled:
+            print("[Agent] NL fallback")
+            text = await agent.reply(cmd, chat_id=str(chat_id))
+            await app.telegram.send_message(text, chat_id=chat_id)
+            return text
+        text = await app.handler.handle(cmd)
+        await app.telegram.send_message(text, chat_id=chat_id)
+        return text
+
     try:
-        await app.telegram.poll_commands(app.handler, setup=setup)
+        await app.telegram.poll_commands(app.handler, setup=setup, on_text=on_text)
     finally:
         await app.monitor.stop()
 
