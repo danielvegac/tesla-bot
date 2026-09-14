@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, Optional, Tuple
 import urllib.parse
 import urllib.request
@@ -19,6 +20,32 @@ HOME = {
     "lat": 4.700454,
     "lon": -74.027738,
 }
+
+
+# Office pin is NOT guessed. Capture live Fleet GPS while parked at work,
+# then set WORK_LAT / WORK_LON in Desktop .env. Until then, "oficina" has no pin.
+def _work_from_env() -> Optional[Dict[str, Any]]:
+    lat = os.getenv("WORK_LAT", "").strip()
+    lon = os.getenv("WORK_LON", "").strip()
+    if not lat or not lon:
+        return None
+    try:
+        label = os.getenv("WORK_LABEL", "Oficina").strip() or "Oficina"
+        return {
+            "query": "oficina",
+            "search": "work pin",
+            "label": label,
+            "short": label,
+            "lat": float(lat),
+            "lon": float(lon),
+        }
+    except ValueError:
+        print("[places] WORK_LAT/WORK_LON are not numbers")
+        return None
+
+
+WORK = _work_from_env()
+WORK_KEYS = {"oficina", "trabajo", "work", "office", "jeeves", "a la oficina"}
 
 PLACE_ALIASES = {
     "unicentro": "Unicentro Bogotá, Colombia",
@@ -38,6 +65,11 @@ SHORT_NAMES = {
     "rancho": "El Rancho",
     "casa": "Casa",
     "home": "Casa",
+    "oficina": "Oficina",
+    "trabajo": "Oficina",
+    "work": "Oficina",
+    "office": "Oficina",
+    "jeeves": "Oficina",
 }
 
 
@@ -62,6 +94,11 @@ def resolve_place(query: str) -> Optional[Dict[str, Any]]:
     key = q.lower()
     if key in {"casa", "home", "a casa", "mi casa"}:
         return dict(HOME)
+    if key in WORK_KEYS:
+        if WORK is None:
+            print("[places] no work pin (set WORK_LAT and WORK_LON from a parked-at-office GPS)")
+            return None
+        return dict(WORK)
     search = PLACE_ALIASES.get(key, q if "," in q else f"{q}, Bogotá, Colombia")
     url = (
         "https://nominatim.openstreetmap.org/search?"
