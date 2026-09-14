@@ -83,10 +83,16 @@ def navigation_destination(text: str) -> Optional[str]:
             return dest or None
     if t in {"casa", "home", "a casa", "ir casa"}:
         return "casa"
+    if t in {"oficina", "trabajo", "work", "office", "jeeves"}:
+        return "oficina"
     if "unicentro" in t:
         return "Unicentro"
     if "el rancho" in t or "club campestre" in t:
         return "Club Campestre El Rancho"
     if re.search(r"\bcasa\b", t) and any(w in t for w in ("marca", "ir", "curso", "destino", "home", "llev")):
         return "casa"
+    if re.search(r"\b(oficina|trabajo|jeeves)\b", t) and any(
+        w in t for w in ("marca", "ir", "curso", "destino", "llev", "go")
+    ):
+        return "oficina"
     return None
