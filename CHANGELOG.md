@@ -4,6 +4,10 @@ All notable changes and milestones for Tesla Familia Bot.
 
 ## [Unreleased]
 
+### 2026-09-14 — Offline evals for the direct path
+- `python3 -m evals.run` now fails if flash/honk/lock/climate/set_temps would go through the LLM.
+- Honesty cases: asleep flash is a Tesla error; stale lock still POSTs; climate off does not claim success when telemetry stays ON.
+
 ### 2026-09-14 — Direct car actions (no LLM lies)
 - Python owns flash / honk / lock / climate / set_temps before Qwen.
 - Wake copy is neutral agent voice (`Tesla despierto`), never feminine `despierta`.

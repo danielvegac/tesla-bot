@@ -10,11 +10,29 @@
     {"id": "nav-oficina", "text": "marca el curso para oficina", "expect": "other"},
     {"id": "flash-en", "text": "flash", "expect": "flash"},
     {"id": "flash-lights", "text": "Flash lights", "expect": "flash"},
+    {"id": "flash-es", "text": "destella las luces", "expect": "flash"},
     {"id": "honk-en", "text": "Honk", "expect": "honk"},
+    {"id": "honk-bocina", "text": "Toca la bocina", "expect": "honk"},
     {"id": "lock-block", "text": "Block doors", "expect": "lock"},
     {"id": "lock-cierra", "text": "Cierra las puertas", "expect": "lock"},
+    {"id": "lock-bloquea", "text": "Bloquea las puertas", "expect": "lock"},
     {"id": "unlock-abre", "text": "Abre las puertas", "expect": "unlock"},
     {"id": "climate-off-aire", "text": "Apaga el aire", "expect": "climate_off"},
-    {"id": "set-temp-18", "text": "Controla el clima. Ponlo en 18 grados", "expect": "set_temp"}
+    {"id": "climate-off-clima", "text": "Apaga el clima", "expect": "climate_off"},
+    {"id": "climate-on-enciende", "text": "Enciende el aire", "expect": "climate_on"},
+    {"id": "set-temp-18", "text": "Controla el clima. Ponlo en 18 grados", "expect": "set_temp"},
+    {"id": "set-temp-short", "text": "clima 18", "expect": "set_temp"},
+    {"id": "digest-resumen", "text": "resumen", "expect": "day_digest"}
+  ],
+  "direct": [
+    {"id": "route-flash", "text": "flash", "action": "flash", "write": ["flash", true]},
+    {"id": "route-flash-lights", "text": "Flash lights", "action": "flash", "write": ["flash", true]},
+    {"id": "route-honk", "text": "Honk", "action": "honk", "write": ["honk", true]},
+    {"id": "route-lock-block", "text": "Block doors", "action": "lock", "write": ["lock", true]},
+    {"id": "route-lock-cierra", "text": "Cierra las puertas", "action": "lock", "write": ["lock", true]},
+    {"id": "route-unlock", "text": "Abre las puertas", "action": "unlock", "write": ["lock", false]},
+    {"id": "route-climate-off", "text": "Apaga el aire", "action": "climate_off", "write": ["climate_off", true]},
+    {"id": "route-set-temp", "text": "clima 18", "action": "set_temp", "write": ["set_temps", 18.0]},
+    {"id": "route-wake", "text": "wake up", "action": "wake", "write": ["wake", true]}
   ]
 }

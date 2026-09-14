@@ -21,6 +21,11 @@ cd ~/Desktop/tesla-familia-bot
 python3 -m evals.run
 ```
 
-Covers wake phrases, confirm/deny, asleep read without battery, unlock blocked until confirm.
+Four suites:
 
-Add cases in `evals/cases.json`.
+1. **intents** — `family_actions.classify` on the family phrases (flash, honk, lock, climate, wake).
+2. **direct** — same phrases must hit `handle_direct`, record a FakeTesla write, and make **zero** LLM calls. `BoomLLM` explodes if the router regresses to Qwen.
+3. **honesty** — asleep flash returns Tesla 500, not a canned refusal; stale `locked=true` still POSTs; climate stop + telemetry still ON is `ok=false`.
+4. **tools** — agent tools: no invented battery while asleep; unlock still asks confirm.
+
+Add phrases in `evals/cases.json` (`intents` + `direct`). Do not add live VIN calls here.
