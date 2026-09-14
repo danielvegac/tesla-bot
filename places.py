@@ -1,8 +1,4 @@
-"""Resolve family place names and estimate driving distance.
-
-Uses Nominatim (search) and OSRM (route). Arrival SOC is OUR estimate,
-not Tesla Trip Planner.
-"""
+"""Resolve family place names and estimate driving distance."""
 
 from __future__ import annotations
 
@@ -14,6 +10,16 @@ import math
 
 USER_AGENT = "TeslaFamiliaBot/1.0 (github.com/danielvegac/tesla-bot)"
 
+# Driveway captured 2026-09-13 from live Fleet GPS while parked at home.
+HOME = {
+    "query": "casa",
+    "search": "home driveway",
+    "label": "Casa",
+    "short": "Casa",
+    "lat": 4.700454,
+    "lon": -74.027738,
+}
+
 PLACE_ALIASES = {
     "unicentro": "Unicentro Bogotá, Colombia",
     "unicentro bogota": "Unicentro Bogotá, Colombia",
@@ -21,7 +27,6 @@ PLACE_ALIASES = {
     "el rancho": "Club Campestre El Rancho, Bogotá, Colombia",
     "club campestre el rancho": "Club Campestre El Rancho, Bogotá, Colombia",
     "rancho": "Club Campestre El Rancho, Bogotá, Colombia",
-    "casa": "Bogotá, Colombia",
 }
 
 SHORT_NAMES = {
@@ -31,6 +36,8 @@ SHORT_NAMES = {
     "el rancho": "El Rancho",
     "club campestre el rancho": "El Rancho",
     "rancho": "El Rancho",
+    "casa": "Casa",
+    "home": "Casa",
 }
 
 
@@ -53,6 +60,8 @@ def resolve_place(query: str) -> Optional[Dict[str, Any]]:
     if not q:
         return None
     key = q.lower()
+    if key in {"casa", "home", "a casa", "mi casa"}:
+        return dict(HOME)
     search = PLACE_ALIASES.get(key, q if "," in q else f"{q}, Bogotá, Colombia")
     url = (
         "https://nominatim.openstreetmap.org/search?"
