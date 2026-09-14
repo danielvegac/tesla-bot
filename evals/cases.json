@@ -6,6 +6,7 @@
     {"id": "not-wake-status", "text": "hay pila?", "expect": "other"},
     {"id": "not-wake-awake", "text": "is the tesla awake?", "expect": "other"},
     {"id": "confirm-si", "text": "sí, mándalo", "expect": "confirm"},
-    {"id": "deny-no", "text": "no", "expect": "deny"}
+    {"id": "deny-no", "text": "no", "expect": "deny"},
+    {"id": "nav-oficina", "text": "marca el curso para oficina", "expect": "other"}
   ]
 }
