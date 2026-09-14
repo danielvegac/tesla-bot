@@ -10,6 +10,7 @@ import asyncio
 from typing import Any, Awaitable, Callable, Dict, Optional, Set
 
 import config
+import lfp_reminder
 from tesla_client import TeslaAPIError, TeslaClient
 from trip_logger import MIN_TRIP_KM_DEFAULT, TripLogger
 
@@ -118,7 +119,7 @@ class TripMonitor:
         self._task = asyncio.create_task(self._run_loop(), name="trip-monitor")
         mode = "demo" if self.tesla.demo else "live"
         print(
-            f"📡 TripMonitor started ({mode}, every {self.poll_seconds}s, "
+            f"\U0001f4e1 TripMonitor started ({mode}, every {self.poll_seconds}s, "
             f"park debounce={self.park_debounce_polls})"
         )
 
@@ -134,7 +135,7 @@ class TripMonitor:
                 except asyncio.CancelledError:
                     pass
             self._task = None
-        print("📡 TripMonitor stopped")
+        print("\U0001f4e1 TripMonitor stopped")
 
     async def poll_once(self) -> Optional[Dict[str, Any]]:
         """Fetch one snapshot and process transitions. Useful for tests."""
@@ -146,7 +147,13 @@ class TripMonitor:
             try:
                 await self.on_snapshot(snapshot)
             except Exception as exc:
-                print(f"⚠️ on_snapshot error: {exc}")
+                print(f"\u26a0\ufe0f on_snapshot error: {exc}")
+        try:
+            note = lfp_reminder.on_snapshot(snapshot)
+            if note:
+                print(f"[lfp] {note}")
+        except Exception as exc:
+            print(f"[lfp] hook error: {exc}")
         return snapshot
 
     async def run_for(self, duration_s: float) -> None:
@@ -162,7 +169,7 @@ class TripMonitor:
             try:
                 await self.poll_once()
             except Exception as exc:  # keep loop alive
-                print(f"⚠️ TripMonitor poll error: {exc}")
+                print(f"\u26a0\ufe0f TripMonitor poll error: {exc}")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self.poll_seconds)
             except asyncio.TimeoutError:
@@ -172,20 +179,17 @@ class TripMonitor:
         active = self._active_trip_id is not None
         wake = self.wake_when_idle or active
         try:
-            # When idle and car likely asleep, avoid aggressive wake in live mode
             if not self.tesla.demo and not wake:
-                # list-only soft check would still hit network; get_vehicle_data
-                # with wake=False may 408 — treat as parked/asleep skip
                 try:
                     return await self.tesla.get_vehicle_data(wake=False)
                 except TeslaAPIError as exc:
                     if exc.status_code == 408:
-                        print("😴 Vehicle asleep — skip poll (no active trip)")
+                        print("\U0001f634 Vehicle asleep \u2014 skip poll (no active trip)")
                         return None
                     raise
             return await self.tesla.get_vehicle_data(wake=wake)
         except TeslaAPIError as exc:
-            print(f"⚠️ Tesla API: {exc}")
+            print(f"\u26a0\ufe0f Tesla API: {exc}")
             return None
 
     async def _process_snapshot(self, snapshot: Dict[str, Any]) -> None:
@@ -198,17 +202,15 @@ class TripMonitor:
                 self._active_trip_id = self.logger.start_trip(snapshot)
             return
 
-        # Active trip
         if driving:
             self._parked_streak = 0
             return
 
-        # Parked while trip active — debounce end (traffic lights)
         self._parked_streak += 1
         if self._parked_streak < self.park_debounce_polls:
             print(
-                f"⏸️ Parked signal {self._parked_streak}/"
-                f"{self.park_debounce_polls} — waiting to end trip "
+                f"\u23f8\ufe0f Parked signal {self._parked_streak}/"
+                f"{self.park_debounce_polls} \u2014 waiting to end trip "
                 f"#{self._active_trip_id}"
             )
             return
@@ -249,26 +251,22 @@ async def _demo_simulation() -> None:
             on_trip_end=on_end,
         )
 
-        print("=== demo simulation: parked → drive → park ===")
-        # 1) Parked
+        print("=== demo simulation: parked \u2192 drive \u2192 park ===")
         tesla.demo_set_parked()
         s = await monitor.poll_once()
         assert s and is_parked(s)
         assert logger.get_active_trip() is None
-        print("  parked: no active trip ✓")
+        print("  parked: no active trip \u2713")
 
-        # 2) Start driving
         tesla.demo_set_driving(speed_kmh=60.0)
         s = await monitor.poll_once()
         assert s and is_driving(s)
         active = logger.get_active_trip()
         assert active is not None
-        print(f"  driving: active trip #{active['id']} ✓")
+        print(f"  driving: active trip #{active['id']} \u2713")
 
-        # Advance odometer / battery like a real poll loop would
         start_odo = float(s["odometer_km"])
         for _ in range(5):
-            # ~1 km per poll at fixed bump for test determinism
             tesla._demo_odometer_km += 1.0
             tesla._demo_battery -= 0.3
             tesla._demo_lat += 0.001
@@ -276,14 +274,13 @@ async def _demo_simulation() -> None:
 
         mid = await tesla.get_vehicle_data()
         assert float(mid["odometer_km"]) >= start_odo + 5.0 - 0.01
-        print(f"  odometer advanced to {mid['odometer_km']} km ✓")
+        print(f"  odometer advanced to {mid['odometer_km']} km \u2713")
 
-        # 3) Park — need debounce polls
         tesla.demo_set_parked()
-        await monitor.poll_once()  # streak 1
+        await monitor.poll_once()
         assert logger.get_active_trip() is not None
-        print("  park debounce 1/2 — still active ✓")
-        await monitor.poll_once()  # streak 2 → end
+        print("  park debounce 1/2 \u2014 still active \u2713")
+        await monitor.poll_once()
         assert logger.get_active_trip() is None
         assert len(completed) == 1
         summary = completed[0]
@@ -293,29 +290,25 @@ async def _demo_simulation() -> None:
         assert summary["cost_cop"] > 0
         print(f"  trip completed: {summary}")
 
-        # 4) Tiny move should cancel
         tesla.demo_set_driving(5.0)
         await monitor.poll_once()
-        tesla._demo_odometer_km += 0.05  # < 0.2 km
+        tesla._demo_odometer_km += 0.05
         tesla.demo_set_parked()
         await monitor.poll_once()
         await monitor.poll_once()
         recent = logger.get_recent_trips(limit=5)
-        # only the completed ~5km trip, not the tiny one
         assert all(t["distance_km"] >= 0.2 for t in recent)
-        print("  tiny trip cancelled ✓")
+        print("  tiny trip cancelled \u2713")
 
-        # 5) Summary
         summ = logger.get_summary("today")
         print(f"  summary: {summ}")
         assert summ["trip_count"] >= 1
         print(logger.format_recent())
 
-        # 6) Live-style poll path with demo client still works via run_for
         print("\n=== short run_for loop ===")
         tesla.demo_set_driving(40)
         await monitor.run_for(0.2)
-        print("  run_for OK ✓")
+        print("  run_for OK \u2713")
 
         print("\nALL TRIP MONITOR TESTS PASSED")
     finally:
