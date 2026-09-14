@@ -57,6 +57,8 @@ NAV_PREFIX = (
     "destino a ",
     "mandalo a ",
     "manda a ",
+    "llevame a ",
+    "llévame a ",
 )
 
 
@@ -79,8 +81,12 @@ def navigation_destination(text: str) -> Optional[str]:
         if idx >= 0:
             dest = raw[idx + len(prefix) :].strip(" .,;?")
             return dest or None
+    if t in {"casa", "home", "a casa", "ir casa"}:
+        return "casa"
     if "unicentro" in t:
         return "Unicentro"
     if "el rancho" in t or "club campestre" in t:
         return "Club Campestre El Rancho"
+    if re.search(r"\bcasa\b", t) and any(w in t for w in ("marca", "ir", "curso", "destino", "home", "llev")):
+        return "casa"
     return None
