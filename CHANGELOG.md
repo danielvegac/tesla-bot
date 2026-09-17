@@ -4,6 +4,11 @@ All notable changes and milestones for Tesla Familia Bot.
 
 ## [Unreleased]
 
+### 2026-09-17 — LFP weekly copy actually reaches Telegram
+- `command_handler.on_snapshot` now calls `lfp_reminder.on_snapshot` and `notify_family` when the weekly 100% nudge fires.
+- `TripMonitor.poll_once` still seeds `logs/lfp_full.json` and prints leftover copy if the handler is not attached.
+- `carga XX` tip no longer recommends 70–80% (NMC). LFP copy: daily 100% + weekly full.
+
 ### 2026-09-14 — Offline evals for the direct path
 - `python3 -m evals.run` now fails if flash/honk/lock/climate/set_temps would go through the LLM.
 - Honesty cases: asleep flash is a Tesla error; stale lock still POSTs; climate off does not claim success when telemetry stays ON.

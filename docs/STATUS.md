@@ -1,6 +1,6 @@
 # Tesla Familia Bot — Current Status
 
-**Last updated:** 2026-09-14
+**Last updated:** 2026-09-17
 
 ## Working right now
 
@@ -13,7 +13,7 @@
 | Explicit nav with Nominatim pin | Unicentro / Casa |
 | Unknown place | no pin, nothing sent |
 | Home geofence 80 m | driveway `4.700454, -74.027738` |
-| LFP weekly hook | wired in `command_handler.on_snapshot` → `logs/lfp_full.json` |
+| LFP weekly hook | seed + Telegram via `command_handler.on_snapshot` |
 | Charge reminder | 35%, online and not charging |
 | Direct flash / honk / lock / climate | Python path, before LLM |
 | Daily trip digest on trip-end | count + km + % used + last SOC |
@@ -33,7 +33,7 @@
 | Work alias at the office | code ready; pin not captured |
 | Second Telegram chat id | allowlist already supports `id1,id2` |
 | 24/7 host | Mac sleep still kills long-poll |
-| Weekly LFP copy after a real 100% | needs a full charge event |
+| Weekly LFP Telegram after a real 100% | code sends; needs a full charge event to prove the cycle |
 
 ## Key references
 
